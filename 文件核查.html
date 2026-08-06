@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文件核查</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    :root {
+      --primary: #ff6b8a;
+      --primary-light: #fff0f3;
+      --primary-dark: #e85a78;
+      --text: #333;
+      --text-secondary: #666;
+      --bg: #faf7f8;
+      --card: #fff;
+      --border: #ffe0e6;
+      --shadow: 0 4px 20px rgba(255, 107, 138, 0.08);
+      --radius: 16px;
+      --ok: #4caf50;
+      --ok-bg: #e8f5e9;
+      --warn: #ff9800;
+      --warn-bg: #fff3e0;
+      --err: #f44336;
+      --err-bg: #ffebee;
+      --gray: #9e9e9e;
+      --gray-bg: #f5f5f5;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--primary-light);
+      color: var(--text);
+      line-height: 1.7;
+      padding: 0;
+      min-height: 100vh;
+    }
+    /* 返回导航栏 */
+    .nav-bar {
+      background: #fff;
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .nav-bar a {
+      color: var(--primary);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .nav-bar a:hover { color: var(--primary-dark); }
+    .nav-bar .nav-sep { color: #ccc; font-size: 14px; }
+    .nav-bar .nav-current { color: var(--text-secondary); font-size: 14px; }
+    .container {
+      max-width: 1200px;
+      margin: 20px auto 40px;
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .header {
+      background: #fff;
+      color: var(--primary);
+      padding: 48px 20px 32px;
+      text-align: center;
+    }
+    .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 10px; }
+    .header .subtitle { font-size: 14px; max-width: 600px; margin: 0 auto; color: var(--text-secondary); }
+
+    /* 服务状态 */
+    .server-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      justify-content: center;
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    .status-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .status-dot.online { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+    .status-dot.offline { background: #f44336; }
+    .status-dot.checking { background: #ff9800; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    .section {
+      padding: 24px 32px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .section:last-of-type { margin-bottom: 0; border-bottom: none; }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--primary-dark);
+      margin-bottom: 16px;
+    }
+    .step-num {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 700;
+      flex-shrink: 0;
+    }
+    .section-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; }
+
+    /* 上传区 */
+    .upload-card {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 36px 24px;
+      text-align: center;
+      background: var(--primary-light);
+      transition: all 0.3s ease;
+      cursor: pointer;
+      position: relative;
+    }
+    .upload-card:hover { border-color: var(--primary); transform: translateY(-2px); box-shadow: var(--shadow); }
+    .upload-card.has-file { border-color: var(--ok); background: #f1f8e9; }
+    .upload-card input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+    .upload-icon {
+      width: 56px; height: 56px;
+      margin: 0 auto 10px;
+      background: #fff;
+      border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .upload-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+    .upload-desc { font-size: 13px; color: var(--text-secondary); }
+    .file-name { margin-top: 10px; font-size: 13px; color: var(--ok); font-weight: 600; word-break: break-all; }
+
+    /* 按钮 */
+    .action-bar { display: flex; gap: 12px; justify-content: center; align-items: center; }
+    .btn {
+      padding: 12px 28px;
+      border-radius: 24px;
+      border: none;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.25s ease;
+    }
+    .btn:disabled { background: #ccc !important; color: #fff !important; cursor: not-allowed; box-shadow: none !important; }
+    .btn-primary { background: #b0b0b0; color: #fff; }
+    .btn-primary.ready { background: var(--primary); box-shadow: 0 4px 14px rgba(255, 107, 138, 0.35); }
+    .btn-primary.ready:hover { background: var(--primary-dark); transform: translateY(-1px); }
+    .btn-outline { background: #fff; color: var(--primary); border: 1.5px solid var(--primary); }
+    .btn-outline:hover { background: var(--primary-light); }
+    .btn-sm { padding: 6px 16px; font-size: 13px; border-radius: 16px; }
+
+    /* 进度面板 */
+    .panel { background: var(--primary-light); border-radius: 12px; padding: 16px 18px; margin-top: 16px; font-size: 13px; display: none; }
+    .panel.show { display: block; }
+    .panel-title { font-weight: 700; color: var(--primary-dark); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .progress-wrap { background: #fff; border-radius: 10px; overflow: hidden; height: 22px; margin-bottom: 10px; border: 1px solid var(--border); }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #ff8fa3 0%, var(--primary) 100%);
+      width: 0;
+      transition: width 0.4s ease;
+      text-align: center;
+      color: #fff;
+      font-size: 12px;
+      line-height: 22px;
+      font-weight: 600;
+    }
+    .log {
+      max-height: 160px;
+      overflow-y: auto;
+      background: #fff;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.8;
+      color: #555;
+      border: 1px solid var(--border);
+    }
+    .log .ok { color: var(--ok); }
+    .log .warn { color: var(--warn); }
+    .log .err { color: var(--err); }
+    .log .info { color: var(--primary-dark); }
+
+    /* 汇总卡片 */
+    .summary-cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+    .summary-card {
+      flex: 1;
+      min-width: 120px;
+      border-radius: 10px;
+      padding: 14px;
+      text-align: center;
+    }
+    .summary-card .num { font-size: 28px; font-weight: 700; }
+    .summary-card .label { font-size: 12px; margin-top: 2px; }
+    .summary-card.total { background: var(--primary-light); color: var(--primary-dark); }
+    .summary-card.ok { background: var(--ok-bg); color: var(--ok); }
+    .summary-card.err { background: var(--err-bg); color: var(--err); }
+    .summary-card.warn { background: var(--warn-bg); color: var(--warn); }
+    .summary-card.gray { background: var(--gray-bg); color: var(--gray); }
+
+    /* 结果表格 */
+    .table-wrap { margin-top: 14px; overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); display: none; }
+    .table-wrap.show { display: block; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+    thead th {
+      background: var(--primary);
+      color: #fff;
+      padding: 12px 10px;
+      text-align: left;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    tbody td { padding: 12px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; color: #444; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--primary-light); }
+    .verdict { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .verdict-ok { background: var(--ok-bg); color: var(--ok); }
+    .verdict-err { background: var(--err-bg); color: var(--err); }
+    .verdict-warn { background: var(--warn-bg); color: var(--warn); }
+    .verdict-gray { background: var(--gray-bg); color: var(--gray); }
+    .source-link { display: block; color: var(--primary-dark); text-decoration: none; font-size: 12px; margin-bottom: 3px; }
+    .source-link:hover { text-decoration: underline; }
+    .source-unverified { color: #999; font-size: 11px; margin-right: 2px; }
+
+    .footer { padding: 16px; text-align: center; font-size: 12px; color: var(--text-secondary); }
+
+    @media (max-width: 768px) {
+      .header { padding: 24px 16px; }
+      .section { padding: 18px 16px; }
+      .action-bar { flex-direction: column; }
+      .btn { width: 100%; }
+      .summary-cards { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+<!-- 返回导航栏：把 href="index.html" 改成你的主页地址 -->
+<div class="nav-bar">
+  <a href="index.html">← 返回首页</a>
+  <span class="nav-sep">/</span>
+  <span class="nav-current">文件核查</span>
+</div>
+
+<div class="header">
+  <h1>文件核查</h1>
+  <div class="subtitle">上传试卷 PDF，自动提取文本并联网核查古诗文、字词、数据、出处等内容</div>
+  <div class="server-status">
+    <span class="status-dot checking" id="statusDot"></span>
+    <span id="statusText">正在连接核查服务...</span>
+  </div>
+</div>
+
+<div class="container">
+  <!-- 步骤1：上传文件 -->
+  <div class="section">
+    <div class="section-title"><span class="step-num">1</span>上传文件</div>
+    <div class="upload-card" id="pdfUploadCard">
+      <input type="file" id="pdfInput" accept=".pdf">
+      <div class="upload-icon">📄</div>
+      <div class="upload-title">上传试卷 PDF</div>
+      <div class="upload-desc">支持 PDF，点击或拖拽到此处</div>
+      <div class="file-name" id="pdfFileName"></div>
+    </div>
+  </div>
+
+  <!-- 步骤2：开始核查 -->
+  <div class="section">
+    <div class="section-title"><span class="step-num">2</span>开始核查</div>
+    <div class="section-desc">点击按钮后自动提取PDF文本、识别可核查内容，并联网搜索权威网站逐条比对。</div>
+    <div class="action-bar">
+      <button class="btn btn-primary" id="checkBtn" disabled>开始核查</button>
+      <button class="btn btn-outline" id="resetBtn">重置</button>
+    </div>
+
+    <!-- 进度面板 -->
+    <div class="panel" id="progressPanel">
+      <div class="panel-title"><span>核查进度</span></div>
+      <div class="progress-wrap"><div class="progress-bar" id="progressBar">0%</div></div>
+      <div class="log" id="logArea"></div>
+    </div>
+
+    <!-- 结果面板 -->
+    <div class="panel" id="resultPanel">
+      <div class="panel-title">
+        <span>核查结果（<span id="itemCount">0</span> 项）</span>
+      </div>
+      <!-- 汇总 -->
+      <div class="summary-cards" id="summaryCards" style="display:none;">
+        <div class="summary-card total"><div class="num" id="sumTotal">0</div><div class="label">核查总数</div></div>
+        <div class="summary-card ok"><div class="num" id="sumOk">0</div><div class="label">内容无误</div></div>
+        <div class="summary-card err"><div class="num" id="sumErr">0</div><div class="label">存在错误</div></div>
+        <div class="summary-card warn"><div class="num" id="sumWarn">0</div><div class="label">存疑待商</div></div>
+        <div class="summary-card gray"><div class="num" id="sumUnknown">0</div><div class="label">无法核实</div></div>
+      </div>
+      <!-- 表格 -->
+      <div class="table-wrap" id="resultTableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:40px;">#</th>
+              <th style="width:100px;">页码/题号</th>
+              <th>核查内容</th>
+              <th style="width:90px;">结论</th>
+              <th>核查依据与链接</th>
+              <th>说明/修改建议</th>
+            </tr>
+          </thead>
+          <tbody id="resultTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    文件核查 · PDF提取 + 联网搜索 + 文本比对 · 服务端运行于 localhost:3456 · © 2026
+  </div>
+</div>
+
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  const SERVER_URL = 'http://localhost:3456';
+
+  let pdfFile = null;
+  let serverOnline = false;
+
+  const $ = id => document.getElementById(id);
+
+  // ===== 服务状态检查 =====
+  async function checkServer() {
+    $('statusDot').className = 'status-dot checking';
+    $('statusText').textContent = '正在连接核查服务...';
+    try {
+      const res = await fetch(SERVER_URL + '/api/health', { timeout: 3000 });
+      if (res.ok) {
+        serverOnline = true;
+        $('statusDot').className = 'status-dot online';
+        $('statusText').textContent = '核查服务已连接';
+        return true;
+      }
+    } catch (e) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const res = await fetch(SERVER_URL + '/api/health');
+        if (res.ok) {
+          serverOnline = true;
+          $('statusDot').className = 'status-dot online';
+          $('statusText').textContent = '核查服务已连接';
+          return true;
+        }
+      } catch (e2) {}
+    }
+    serverOnline = false;
+    $('statusDot').className = 'status-dot offline';
+    $('statusText').textContent = '核查服务未运行，请先启动「启动服务.bat」';
+    return false;
+  }
+  checkServer();
+
+  // ===== 工具函数 =====
+  function setProgress(pct, text) {
+    $('progressBar').style.width = pct + '%';
+    $('progressBar').textContent = text || (pct + '%');
+  }
+  function log(msg, type = '') {
+    const line = document.createElement('div');
+    line.className = type;
+    line.textContent = msg;
+    $('logArea').appendChild(line);
+    $('logArea').scrollTop = $('logArea').scrollHeight;
+  }
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function verdictTag(v) {
+    const map = {
+      '内容无误': ['verdict-ok', '✓ 无误'],
+      '存在错误': ['verdict-err', '✗ 错误'],
+      '存疑待商': ['verdict-warn', '⚠ 存疑'],
+      '无法核实': ['verdict-gray', '? 无法核实'],
+    };
+    const [cls, label] = map[v] || ['verdict-gray', v];
+    return `<span class="verdict ${cls}">${label}</span>`;
+  }
+
+  // ===== 上传 PDF =====
+  $('pdfInput').addEventListener('change', e => {
+    pdfFile = e.target.files[0];
+    if (!pdfFile) return;
+    $('pdfFileName').textContent = pdfFile.name;
+    $('pdfUploadCard').classList.add('has-file');
+    $('checkBtn').disabled = false;
+    $('checkBtn').classList.add('ready');
+  });
+
+  // 拖拽
+  const uploadCard = $('pdfUploadCard');
+  uploadCard.addEventListener('dragover', e => { e.preventDefault(); uploadCard.style.borderColor = '#ff6b8a'; });
+  uploadCard.addEventListener('dragleave', e => { e.preventDefault(); uploadCard.style.borderColor = ''; });
+  uploadCard.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadCard.style.borderColor = '';
+    $('pdfInput').files = e.dataTransfer.files;
+    $('pdfInput').dispatchEvent(new Event('change'));
+  });
+
+  // ===== 开始核查 =====
+  $('checkBtn').addEventListener('click', async () => {
+    if (!pdfFile) return;
+
+    if (!serverOnline) {
+      log('正在重新连接服务...', 'warn');
+      const ok = await checkServer();
+      if (!ok) {
+        alert('核查服务未运行！\n请先双击「启动服务.bat」启动服务，然后再点击开始核查。');
+        return;
+      }
+    }
+
+    $('checkBtn').disabled = true;
+    $('checkBtn').classList.remove('ready');
+    $('progressPanel').classList.add('show');
+    $('resultPanel').classList.remove('show');
+    $('resultTableWrap').classList.remove('show');
+    $('summaryCards').style.display = 'none';
+    $('logArea').innerHTML = '';
+    $('resultTable').innerHTML = '';
+
+    try {
+      setProgress(2, '2%');
+      log('正在加载 PDF...', 'info');
+
+      const arrayBuffer = await pdfFile.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const totalPages = pdf.numPages;
+      log(`PDF 加载完成，共 ${totalPages} 页`, 'ok');
+
+      const pages = [];
+      for (let i = 1; i <= totalPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(item => item.str).join('');
+        pages.push({ pageNum: i, text: pageText });
+        const pct = 2 + Math.round((i / totalPages) * 18);
+        setProgress(pct, pct + '%');
+        log(`  第 ${i}/${totalPages} 页提取完成`);
+      }
+      log('文本提取完成', 'ok');
+
+      setProgress(22, '22%');
+      log('正在发送文本到核查服务...', 'info');
+      log('服务端正在识别可核查内容并联网搜索...', 'info');
+
+      const response = await fetch(SERVER_URL + '/api/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pages }),
+      });
+
+      if (!response.ok) {
+        throw new Error('服务端返回错误: ' + response.status);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let totalItems = 0;
+      let checkedItems = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (data.type === 'start') {
+            totalItems = data.count;
+            log(`识别到 ${totalItems} 项可核查内容，开始联网核查...`, 'info');
+            setProgress(25, `25% (0/${totalItems})`);
+            const rows = data.items.map(it => `
+              <tr id="row-${it.idx}" class="pending">
+                <td>${it.idx}</td>
+                <td>${it.page}</td>
+                <td>${escapeHtml(it.content)}</td>
+                <td><span class="verdict verdict-gray">等待中...</span></td>
+                <td>—</td>
+                <td>—</td>
+              </tr>
+            `).join('');
+            $('resultTable').innerHTML = rows;
+            $('resultTableWrap').classList.add('show');
+            $('resultPanel').classList.add('show');
+            $('itemCount').textContent = totalItems;
+
+          } else if (data.type === 'result') {
+            checkedItems++;
+            const r = data.result;
+            const pct = 25 + Math.round((checkedItems / totalItems) * 70);
+            setProgress(pct, `${pct}% (${checkedItems}/${totalItems})`);
+
+            const sourceLinks = (r.sources || []).map(s => {
+              const unverified = s.verified === false ? '<span class="source-unverified">[未验证]</span> ' : '';
+              return `<a class="source-link" href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${unverified}${escapeHtml(s.title)}</a>`;
+            }).join('') || '—';
+
+            const notes = r.notes ? escapeHtml(r.notes) : '—';
+            const suggestion = r.suggestion ? `<br><b style="color:var(--primary-dark);">建议：</b>${escapeHtml(r.suggestion)}` : '';
+
+            const row = document.getElementById(`row-${r.idx}`);
+            if (row) {
+              row.classList.remove('pending');
+              row.cells[3].innerHTML = verdictTag(r.verdict);
+              row.cells[4].innerHTML = sourceLinks;
+              row.cells[5].innerHTML = notes + suggestion;
+            }
+
+            const logType = r.verdict === '内容无误' ? 'ok' :
+                           r.verdict === '存在错误' ? 'err' :
+                           r.verdict === '存疑待商' ? 'warn' : '';
+            log(`  [${checkedItems}/${totalItems}] ${r.page} ${r.content.substring(0, 25)} → ${r.verdict}`, logType);
+
+          } else if (data.type === 'done') {
+            const s = data.summary;
+            setProgress(100, '100%');
+            log(`核查完成！正确 ${s.ok} | 错误 ${s.error} | 存疑 ${s.doubt} | 无法核实 ${s.unknown}`, 'ok');
+
+            $('sumTotal').textContent = s.total;
+            $('sumOk').textContent = s.ok;
+            $('sumErr').textContent = s.error;
+            $('sumWarn').textContent = s.doubt;
+            $('sumUnknown').textContent = s.unknown;
+            $('summaryCards').style.display = 'flex';
+
+          } else if (data.type === 'error') {
+            log('服务端错误: ' + data.message, 'err');
+          }
+        }
+      }
+    } catch (err) {
+      log('错误: ' + err.message, 'err');
+      if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+        log('提示：核查服务可能未运行。请先双击「启动服务.bat」', 'warn');
+      }
+    } finally {
+      $('checkBtn').disabled = false;
+      $('checkBtn').classList.add('ready');
+    }
+  });
+
+  // ===== 重置 =====
+  $('resetBtn').addEventListener('click', () => {
+    pdfFile = null;
+    $('pdfInput').value = '';
+    $('pdfFileName').textContent = '';
+    $('pdfUploadCard').classList.remove('has-file');
+    $('checkBtn').disabled = true;
+    $('checkBtn').classList.remove('ready');
+    $('progressPanel').classList.remove('show');
+    $('resultPanel').classList.remove('show');
+    $('resultTableWrap').classList.remove('show');
+    $('summaryCards').style.display = 'none';
+    setProgress(0, '0%');
+  });
+</script>
+</body>
+</html>
