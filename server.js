@@ -17,25 +17,50 @@ app.use(express.static(path.join(__dirname)));
 // ===== 自动暂停（节省 Railway 额度）=====
 // 核查完成 + 5分钟无新请求 → 自动暂停服务
 const RAILWAY_TOKEN = process.env.RAILWAY_TOKEN || '';
-const RAILWAY_DEPLOYMENT_ID = process.env.RAILWAY_DEPLOYMENT_ID || '';
+const RAILWAY_SERVICE_ID = process.env.RAILWAY_SERVICE_ID || '';
+const RAILWAY_ENVIRONMENT_ID = process.env.RAILWAY_ENVIRONMENT_ID || '';
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5分钟
+const RAILWAY_API = 'https://backboard.railway.com/graphql/v2';
 let idleTimer = null;
 
 async function pauseService() {
-  if (!RAILWAY_TOKEN || !RAILWAY_DEPLOYMENT_ID) {
-    console.log('[自动暂停] 未配置 RAILWAY_TOKEN 或 RAILWAY_DEPLOYMENT_ID，跳过');
+  if (!RAILWAY_TOKEN || !RAILWAY_SERVICE_ID || !RAILWAY_ENVIRONMENT_ID) {
+    console.log('[自动暂停] 未配置 RAILWAY_TOKEN / RAILWAY_SERVICE_ID / RAILWAY_ENVIRONMENT_ID，跳过');
     return false;
   }
   console.log('[自动暂停] 正在暂停服务...');
   try {
-    const resp = await axios.post('https://backboard.railway.app/graphql/v2', {
-      query: `mutation { deploymentPause(input: {id: "${RAILWAY_DEPLOYMENT_ID}"}) { id } }`
+    // 1. 查询最新 deployment ID
+    const queryResp = await axios.post(RAILWAY_API, {
+      query: `query { deployments(first: 1, input: { serviceId: "${RAILWAY_SERVICE_ID}", environmentId: "${RAILWAY_ENVIRONMENT_ID}" }) { edges { node { id status } } } }`
     }, {
       headers: { 'Authorization': `Bearer ${RAILWAY_TOKEN}`, 'Content-Type': 'application/json' },
       timeout: 10000
     });
-    if (resp.data.errors) {
-      console.error('[自动暂停] GraphQL错误:', JSON.stringify(resp.data.errors));
+    if (queryResp.data?.errors) {
+      console.error('[自动暂停] 查询错误:', JSON.stringify(queryResp.data.errors));
+      return false;
+    }
+    const edges = queryResp.data?.data?.deployments?.edges || [];
+    if (edges.length === 0) {
+      console.log('[自动暂停] 未找到 deployment，跳过');
+      return false;
+    }
+    const depId = edges[0].node.id;
+    const status = edges[0].node.status;
+    if (status === 'STOPPED' || status === 'CRASHED' || status === 'REMOVED') {
+      console.log(`[自动暂停] 当前状态 ${status}，无需暂停`);
+      return true;
+    }
+    // 2. 停止 deployment
+    const stopResp = await axios.post(RAILWAY_API, {
+      query: `mutation { deploymentStop(id: "${depId}") { id status } }`
+    }, {
+      headers: { 'Authorization': `Bearer ${RAILWAY_TOKEN}`, 'Content-Type': 'application/json' },
+      timeout: 10000
+    });
+    if (stopResp.data?.errors) {
+      console.error('[自动暂停] 停止错误:', JSON.stringify(stopResp.data.errors));
       return false;
     }
     console.log('[自动暂停] 服务已暂停');
@@ -48,7 +73,7 @@ async function pauseService() {
 
 function scheduleAutoPause() {
   if (idleTimer) clearTimeout(idleTimer);
-  if (!RAILWAY_TOKEN || !RAILWAY_DEPLOYMENT_ID) return;
+  if (!RAILWAY_TOKEN || !RAILWAY_SERVICE_ID || !RAILWAY_ENVIRONMENT_ID) return;
   idleTimer = setTimeout(() => pauseService(), IDLE_TIMEOUT_MS);
   console.log(`[自动暂停] ${IDLE_TIMEOUT_MS / 60000}分钟后无活动将自动暂停`);
 }
@@ -814,7 +839,7 @@ async function verifyItem(item) {
 // ===== API =====
 app.get('/api/health', (req, res) => {
   // 健康检查不计入活动，不重置暂停计时器
-  res.json({ status: 'ok', time: new Date().toISOString(), autoPause: !!(RAILWAY_TOKEN && RAILWAY_DEPLOYMENT_ID) });
+  res.json({ status: 'ok', time: new Date().toISOString(), autoPause: !!(RAILWAY_TOKEN && RAILWAY_SERVICE_ID && RAILWAY_ENVIRONMENT_ID) });
 });
 
 // 手动暂停端点（前端可调用）
@@ -883,7 +908,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  文件核查服务已启动`);
   console.log(`  端口: ${PORT}`);
   console.log(`  本地访问: http://localhost:${PORT}/文件核查.html`);
-  console.log(`  自动暂停: ${RAILWAY_TOKEN && RAILWAY_DEPLOYMENT_ID ? '已启用（5分钟无活动）' : '未启用（需配置环境变量）'}`);
+  console.log(`  自动暂停: ${RAILWAY_TOKEN && RAILWAY_SERVICE_ID && RAILWAY_ENVIRONMENT_ID ? '已启用（5分钟无活动）' : '未启用（需配置环境变量）'}`);
   console.log(`========================================\n`);
   // 启动时开始计时
   scheduleAutoPause();
