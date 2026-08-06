@@ -14,6 +14,45 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname)));
 
+// ===== 自动暂停（节省 Railway 额度）=====
+// 核查完成 + 5分钟无新请求 → 自动暂停服务
+const RAILWAY_TOKEN = process.env.RAILWAY_TOKEN || '';
+const RAILWAY_DEPLOYMENT_ID = process.env.RAILWAY_DEPLOYMENT_ID || '';
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5分钟
+let idleTimer = null;
+
+async function pauseService() {
+  if (!RAILWAY_TOKEN || !RAILWAY_DEPLOYMENT_ID) {
+    console.log('[自动暂停] 未配置 RAILWAY_TOKEN 或 RAILWAY_DEPLOYMENT_ID，跳过');
+    return false;
+  }
+  console.log('[自动暂停] 正在暂停服务...');
+  try {
+    const resp = await axios.post('https://backboard.railway.app/graphql/v2', {
+      query: `mutation { deploymentPause(input: {id: "${RAILWAY_DEPLOYMENT_ID}"}) { id } }`
+    }, {
+      headers: { 'Authorization': `Bearer ${RAILWAY_TOKEN}`, 'Content-Type': 'application/json' },
+      timeout: 10000
+    });
+    if (resp.data.errors) {
+      console.error('[自动暂停] GraphQL错误:', JSON.stringify(resp.data.errors));
+      return false;
+    }
+    console.log('[自动暂停] 服务已暂停');
+    return true;
+  } catch (e) {
+    console.error('[自动暂停] 失败:', e.response?.data?.errors || e.message);
+    return false;
+  }
+}
+
+function scheduleAutoPause() {
+  if (idleTimer) clearTimeout(idleTimer);
+  if (!RAILWAY_TOKEN || !RAILWAY_DEPLOYMENT_ID) return;
+  idleTimer = setTimeout(() => pauseService(), IDLE_TIMEOUT_MS);
+  console.log(`[自动暂停] ${IDLE_TIMEOUT_MS / 60000}分钟后无活动将自动暂停`);
+}
+
 // ===== 浏览器请求头 =====
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -774,7 +813,14 @@ async function verifyItem(item) {
 
 // ===== API =====
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+  // 健康检查不计入活动，不重置暂停计时器
+  res.json({ status: 'ok', time: new Date().toISOString(), autoPause: !!(RAILWAY_TOKEN && RAILWAY_DEPLOYMENT_ID) });
+});
+
+// 手动暂停端点（前端可调用）
+app.post('/api/pause', async (req, res) => {
+  const ok = await pauseService();
+  res.json({ success: ok });
 });
 
 app.post('/api/check', async (req, res) => {
@@ -783,6 +829,9 @@ app.post('/api/check', async (req, res) => {
   if (!pages || !Array.isArray(pages)) {
     return res.status(400).json({ error: '需要 pages 数组' });
   }
+
+  // 有核查活动，重置暂停计时器
+  scheduleAutoPause();
 
   // SSE
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -818,10 +867,13 @@ app.post('/api/check', async (req, res) => {
     console.log(`  完成: 正确${summary.ok} 错误${summary.error} 存疑${summary.doubt} 无法核实${summary.unknown}\n`);
     res.write(`data: ${JSON.stringify({ type: 'done', summary })}\n\n`);
     res.end();
+    // 核查完成后重新计时
+    scheduleAutoPause();
   } catch (e) {
     console.error('核查出错:', e);
     res.write(`data: ${JSON.stringify({ type: 'error', message: e.message })}\n\n`);
     res.end();
+    scheduleAutoPause();
   }
 });
 
@@ -831,5 +883,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  文件核查服务已启动`);
   console.log(`  端口: ${PORT}`);
   console.log(`  本地访问: http://localhost:${PORT}/文件核查.html`);
+  console.log(`  自动暂停: ${RAILWAY_TOKEN && RAILWAY_DEPLOYMENT_ID ? '已启用（5分钟无活动）' : '未启用（需配置环境变量）'}`);
   console.log(`========================================\n`);
+  // 启动时开始计时
+  scheduleAutoPause();
 });
