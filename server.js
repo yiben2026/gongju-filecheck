@@ -8,7 +8,7 @@ const cheerio = require('cheerio');
 const path = require('path');
 
 const app = express();
-const PORT = 3456;
+const PORT = process.env.PORT || 3456;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -826,10 +826,10 @@ app.post('/api/check', async (req, res) => {
 });
 
 // ===== 启动 =====
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n========================================`);
   console.log(`  文件核查服务已启动`);
-  console.log(`  地址: http://localhost:${PORT}`);
-  console.log(`  前端: http://localhost:${PORT}/文件核查.html`);
+  console.log(`  端口: ${PORT}`);
+  console.log(`  本地访问: http://localhost:${PORT}/文件核查.html`);
   console.log(`========================================\n`);
 });
