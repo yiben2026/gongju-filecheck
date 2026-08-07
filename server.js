@@ -921,6 +921,35 @@ app.post('/api/pause', async (req, res) => {
   res.json({ success: ok });
 });
 
+// 调试：测试各搜索引擎连通性
+app.get('/api/debug/search', async (req, res) => {
+  const query = req.query.q || '朱绛《春女怨》原文';
+  const results = {
+    '360': { status: 'pending', count: 0, sample: '' },
+    baidu: { status: 'pending', count: 0, sample: '' },
+    bing: { status: 'pending', count: 0, sample: '' }
+  };
+  try {
+    const r360 = await search360(query, 2);
+    results['360'] = { status: 'ok', count: r360.length, sample: r360.slice(0, 1).map(x => ({ title: x.title, snippet: x.snippet?.slice(0, 80) })) };
+  } catch (e) {
+    results['360'] = { status: 'error', error: e.message };
+  }
+  try {
+    const rbaidu = await searchBaidu(query, 2);
+    results.baidu = { status: 'ok', count: rbaidu.length, sample: rbaidu.slice(0, 1).map(x => ({ title: x.title, snippet: x.snippet?.slice(0, 80) })) };
+  } catch (e) {
+    results.baidu = { status: 'error', error: e.message };
+  }
+  try {
+    const rbing = await searchBing(query, 2);
+    results.bing = { status: 'ok', count: rbing.length, sample: rbing.slice(0, 1).map(x => ({ title: x.title, snippet: x.snippet?.slice(0, 80) })) };
+  } catch (e) {
+    results.bing = { status: 'error', error: e.message };
+  }
+  res.json({ query, results, env: { node: process.version } });
+});
+
 app.post('/api/check', async (req, res) => {
   const { pages } = req.body;
 
