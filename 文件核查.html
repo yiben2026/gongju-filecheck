@@ -73,26 +73,6 @@
     .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 10px; }
     .header .subtitle { font-size: 14px; max-width: 600px; margin: 0 auto; color: var(--text-secondary); }
 
-    /* 服务状态 */
-    .server-status {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      justify-content: center;
-      margin-top: 12px;
-      font-size: 13px;
-      color: var(--text-secondary);
-    }
-    .status-dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      display: inline-block;
-    }
-    .status-dot.online { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
-    .status-dot.offline { background: #f44336; }
-    .status-dot.checking { background: #ff9800; animation: pulse 1s infinite; }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-
     .section {
       padding: 24px 32px;
       border-bottom: 1px solid var(--border);
@@ -257,13 +237,9 @@
   <span class="nav-current">文件核查</span>
 </div>
 
-<div class="header">
+  <div class="header">
   <h1>文件核查</h1>
   <div class="subtitle">上传试卷 PDF，自动提取文本并联网核查古诗文、字词、数据、出处等内容</div>
-  <div class="server-status">
-    <span class="status-dot checking" id="statusDot"></span>
-    <span id="statusText">正在连接核查服务...</span>
-  </div>
 </div>
 
 <div class="container">
@@ -328,7 +304,7 @@
   </div>
 
   <div class="footer">
-    文件核查 · PDF提取 + 联网搜索 + 文本比对 · 服务端运行于 localhost:3456 · © 2026
+    文件核查 · PDF提取 + 联网搜索 + 文本比对 · © 2026
   </div>
 </div>
 
@@ -341,40 +317,8 @@
     : '';
 
   let pdfFile = null;
-  let serverOnline = false;
 
   const $ = id => document.getElementById(id);
-
-  // ===== 服务状态检查 =====
-  async function checkServer() {
-    $('statusDot').className = 'status-dot checking';
-    $('statusText').textContent = '正在连接核查服务...';
-    try {
-      const res = await fetch(SERVER_URL + '/api/health', { timeout: 3000 });
-      if (res.ok) {
-        serverOnline = true;
-        $('statusDot').className = 'status-dot online';
-        $('statusText').textContent = '核查服务已连接';
-        return true;
-      }
-    } catch (e) {
-      await new Promise(r => setTimeout(r, 500));
-      try {
-        const res = await fetch(SERVER_URL + '/api/health');
-        if (res.ok) {
-          serverOnline = true;
-          $('statusDot').className = 'status-dot online';
-          $('statusText').textContent = '核查服务已连接';
-          return true;
-        }
-      } catch (e2) {}
-    }
-    serverOnline = false;
-    $('statusDot').className = 'status-dot offline';
-    $('statusText').textContent = '核查服务未运行，请先启动「启动服务.bat」';
-    return false;
-  }
-  checkServer();
 
   // ===== 工具函数 =====
   function setProgress(pct, text) {
@@ -426,15 +370,6 @@
   // ===== 开始核查 =====
   $('checkBtn').addEventListener('click', async () => {
     if (!pdfFile) return;
-
-    if (!serverOnline) {
-      log('正在重新连接服务...', 'warn');
-      const ok = await checkServer();
-      if (!ok) {
-        alert('核查服务未运行！\n请先双击「启动服务.bat」启动服务，然后再点击开始核查。');
-        return;
-      }
-    }
 
     $('checkBtn').disabled = true;
     $('checkBtn').classList.remove('ready');
@@ -565,7 +500,7 @@
     } catch (err) {
       log('错误: ' + err.message, 'err');
       if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
-        log('提示：核查服务可能未运行。请先双击「启动服务.bat」', 'warn');
+        log('提示：核查服务暂时不可用，请稍后重试或刷新页面。', 'warn');
       }
     } finally {
       $('checkBtn').disabled = false;
