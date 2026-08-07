@@ -33,7 +33,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+             type=raw,value=v${{ github.run_number }}
             type=sha,prefix=,suffix=,format=short
 
       - name: Build and push Docker image
