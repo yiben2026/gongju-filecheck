@@ -361,8 +361,123 @@ async function searchBing(query, num = 8) {
   }
 }
 
+// ===== 搜索 API（境外云 IP 被百度/360/Bing 屏蔽时启用）=====
+const SERPAPI_KEY = process.env.SERPAPI_KEY || '';
+const BING_SEARCH_KEY = process.env.BING_SEARCH_KEY || '';
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || '';
+const GOOGLE_CX = process.env.GOOGLE_CX || '';
+const BRAVE_API_KEY = process.env.BRAVE_API_KEY || '';
+
+async function searchSerpAPI(query, num = 8) {
+  if (!SERPAPI_KEY) return [];
+  try {
+    const params = new URLSearchParams({
+      api_key: SERPAPI_KEY,
+      q: query,
+      engine: 'baidu',
+      num: String(num),
+      hl: 'zh-cn'
+    });
+    const resp = await axios.get(`https://serpapi.com/search?${params.toString()}`, { timeout: 15000 });
+    const data = resp.data;
+    const organic = data.organic_results || [];
+    const results = organic.slice(0, num).map(r => ({
+      title: r.title || '',
+      url: r.link || r.url || '',
+      snippet: r.snippet || r.description || ''
+    })).filter(r => r.title && r.url);
+    console.log(`  [SerpAPI] ${query} => ${results.length} 条`);
+    return results;
+  } catch (e) {
+    console.error('  [SerpAPI失败]', e.response?.data?.error || e.message);
+    return [];
+  }
+}
+
+async function searchBingAPI(query, num = 8) {
+  if (!BING_SEARCH_KEY) return [];
+  try {
+    const params = new URLSearchParams({
+      q: query,
+      count: String(num),
+      mkt: 'zh-CN',
+      setLang: 'zh',
+      responseFilter: 'Webpages',
+      safeSearch: 'Off'
+    });
+    const resp = await axios.get(`https://api.bing.microsoft.com/v7.0/search?${params.toString()}`, {
+      headers: { 'Ocp-Apim-Subscription-Key': BING_SEARCH_KEY },
+      timeout: 15000
+    });
+    const results = (resp.data.webPages?.value || []).map(r => ({
+      title: r.name || '',
+      url: r.url || '',
+      snippet: r.snippet || ''
+    })).filter(r => r.title && r.url);
+    console.log(`  [Bing API] ${query} => ${results.length} 条`);
+    return results;
+  } catch (e) {
+    console.error('  [Bing API失败]', e.response?.data?.message || e.message);
+    return [];
+  }
+}
+
+async function searchGoogleAPI(query, num = 8) {
+  if (!GOOGLE_API_KEY || !GOOGLE_CX) return [];
+  try {
+    const params = new URLSearchParams({
+      key: GOOGLE_API_KEY,
+      cx: GOOGLE_CX,
+      q: query,
+      num: String(Math.min(num, 10)),
+      hl: 'zh-CN'
+    });
+    const resp = await axios.get(`https://www.googleapis.com/customsearch/v1?${params.toString()}`, { timeout: 15000 });
+    const results = (resp.data.items || []).map(r => ({
+      title: r.title || '',
+      url: r.link || '',
+      snippet: r.snippet || ''
+    })).filter(r => r.title && r.url);
+    console.log(`  [Google API] ${query} => ${results.length} 条`);
+    return results;
+  } catch (e) {
+    console.error('  [Google API失败]', e.response?.data?.error?.message || e.message);
+    return [];
+  }
+}
+
+async function searchBraveAPI(query, num = 8) {
+  if (!BRAVE_API_KEY) return [];
+  try {
+    const resp = await axios.get('https://api.search.brave.com/res/v1/web/search', {
+      params: { q: query, count: num, search_lang: 'zh', text_decorations: 'false' },
+      headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' },
+      timeout: 15000
+    });
+    const results = (resp.data.web?.results || []).map(r => ({
+      title: r.title || '',
+      url: r.url || '',
+      snippet: r.description || ''
+    })).filter(r => r.title && r.url);
+    console.log(`  [Brave API] ${query} => ${results.length} 条`);
+    return results;
+  } catch (e) {
+    console.error('  [Brave API失败]', e.response?.data?.message || e.message);
+    return [];
+  }
+}
+
 async function searchWeb(query, num = 8) {
-  let results = await search360(query, num);
+  // 优先使用搜索 API（云 IP 做 HTML 抓取容易被屏蔽）
+  let results = [];
+  if (SERPAPI_KEY) results = await searchSerpAPI(query, num);
+  if (results.length === 0 && BING_SEARCH_KEY) results = await searchBingAPI(query, num);
+  if (results.length === 0 && GOOGLE_API_KEY && GOOGLE_CX) results = await searchGoogleAPI(query, num);
+  if (results.length === 0 && BRAVE_API_KEY) results = await searchBraveAPI(query, num);
+  // 兜底：直接抓取搜索引擎结果页（仅本地/非云 IP 环境通常有效）
+  if (results.length === 0) {
+    results = await search360(query, num);
+  }
   if (results.length === 0) {
     results = await searchBaidu(query, num);
   }
@@ -925,9 +1040,15 @@ app.post('/api/pause', async (req, res) => {
 app.get('/api/debug/search', async (req, res) => {
   const query = req.query.q || '朱绛《春女怨》原文';
   const results = {
-    '360': { status: 'pending', count: 0, sample: '' },
-    baidu: { status: 'pending', count: 0, sample: '' },
-    bing: { status: 'pending', count: 0, sample: '' }
+    '360': { status: 'pending', count: 0, sample: [] },
+    baidu: { status: 'pending', count: 0, sample: [] },
+    bing: { status: 'pending', count: 0, sample: [] },
+    apis: {
+      serpapi: !!SERPAPI_KEY,
+      bingApi: !!BING_SEARCH_KEY,
+      googleApi: !!(GOOGLE_API_KEY && GOOGLE_CX),
+      braveApi: !!BRAVE_API_KEY
+    }
   };
   try {
     const r360 = await search360(query, 2);
@@ -1011,6 +1132,12 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  端口: ${PORT}`);
   console.log(`  本地访问: http://localhost:${PORT}/文件核查.html`);
   console.log(`  自动暂停: ${RAILWAY_TOKEN && RAILWAY_SERVICE_ID && RAILWAY_ENVIRONMENT_ID ? '已启用（5分钟无活动）' : '未启用（需配置环境变量）'}`);
+  const apiList = [];
+  if (SERPAPI_KEY) apiList.push('SerpAPI');
+  if (BING_SEARCH_KEY) apiList.push('BingSearch');
+  if (GOOGLE_API_KEY && GOOGLE_CX) apiList.push('GoogleCSE');
+  if (BRAVE_API_KEY) apiList.push('Brave');
+  console.log(`  搜索API: ${apiList.length ? apiList.join('/') : '未配置（依赖HTML抓取，在云IP下可能被屏蔽）'}`);
   console.log(`========================================\n`);
   // 启动时开始计时
   scheduleAutoPause();
