@@ -249,21 +249,90 @@ function findNearestQuestionLabel(labels, pos, maxDistance = 400) {
 }
 
 // ===== 搜索引擎 =====
-// 主用百度搜索，结果更准；Bing 作为备用
+// 主用 360 搜索（中文结果好、对境外云 IP 相对友好）；百度/Bing 作为备用
+function stripHtmlTags(str) {
+  return (str || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+async function search360(query, num = 8) {
+  try {
+    const url = `https://www.so.com/s?q=${encodeURIComponent(query)}`;
+    const resp = await axios.get(url, { headers: HEADERS, timeout: 12000, maxRedirects: 5 });
+    const $ = cheerio.load(resp.data);
+    const results = [];
+    $('.res-list').each((i, el) => {
+      if (i >= num) return false;
+      const a = $(el).find('h3 a, .res-title a').first();
+      const title = a.text().trim();
+      const link = a.attr('href') || '';
+      let snippet = $(el).find('.res-desc, .res-summary').text().trim();
+      // fallback：取第一个非空段落文本
+      if (!snippet) {
+        snippet = $(el).find('p').map((_, p) => $(p).text().trim()).get().filter(Boolean).join(' ');
+      }
+      if (title && link) results.push({ title, url: link, snippet });
+    });
+    console.log(`  [360搜索] ${query} => ${results.length} 条`);
+    return results;
+  } catch (e) {
+    console.error('  [360搜索失败]', e.message);
+    return [];
+  }
+}
+
 async function searchBaidu(query, num = 8) {
   try {
     const url = `https://www.baidu.com/s?wd=${encodeURIComponent(query)}`;
     const resp = await axios.get(url, { headers: HEADERS, timeout: 12000, maxRedirects: 5 });
     const $ = cheerio.load(resp.data);
     const results = [];
+
+    // 旧版结果
     $('.result, .c-container').each((i, el) => {
       if (i >= num) return false;
       const a = $(el).find('h3 a, .t a').first();
       const title = a.text().trim();
       const link = a.attr('href') || '';
-      const snippet = $(el).find('.c-abstract, .content-right_8Zs40, .abstract, span[class*="abstract"]').text().trim();
+      let snippet = $(el).find('.c-abstract, .content-right_8Zs40, .abstract, span[class*="abstract"]').text().trim();
+      if (!snippet) {
+        snippet = $(el).find('p').map((_, p) => $(p).text().trim()).get().filter(Boolean).join(' ');
+      }
       if (title && link) results.push({ title, url: link, snippet });
     });
+
+    // 新版 aladdin/card 结果：从 s-data JSON 或文本兜底
+    if (results.length === 0) {
+      const regex = /<!--s-data:({[\s\S]*?})-->/g;
+      let m;
+      while ((m = regex.exec(resp.data)) !== null && results.length < num) {
+        try {
+          const data = JSON.parse(m[1]);
+          const collect = (obj) => {
+            if (!obj) return null;
+            const title = stripHtmlTags(obj.title || obj.cardTitle || '').trim();
+            const summary = stripHtmlTags(obj.summary || obj.aiAbstract || '').trim();
+            const url = obj.url || obj.tcUrl || (obj.urlParams && obj.urlParams.tcUrl) || '';
+            if (title && url) return { title, url, snippet: summary };
+            return null;
+          };
+          const r = collect(data);
+          if (r && !results.some(x => x.url === r.url)) results.push(r);
+          if (data.mainItem) {
+            const r2 = collect(data.mainItem);
+            if (r2 && !results.some(x => x.url === r2.url)) results.push(r2);
+          }
+          if (data.docList && Array.isArray(data.docList)) {
+            for (const doc of data.docList) {
+              const r3 = collect(doc);
+              if (r3 && !results.some(x => x.url === r3.url)) results.push(r3);
+              if (results.length >= num) break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    console.log(`  [百度搜索] ${query} => ${results.length} 条`);
     return results;
   } catch (e) {
     console.error('  [百度搜索失败]', e.message);
@@ -284,6 +353,7 @@ async function searchBing(query, num = 8) {
       const snippet = $(el).find('.b_caption p').text().trim() || $(el).find('p').text().trim();
       if (title && link) results.push({ title, url: link, snippet });
     });
+    console.log(`  [Bing搜索] ${query} => ${results.length} 条`);
     return results;
   } catch (e) {
     console.error('  [Bing搜索失败]', e.message);
@@ -292,7 +362,10 @@ async function searchBing(query, num = 8) {
 }
 
 async function searchWeb(query, num = 8) {
-  let results = await searchBaidu(query, num);
+  let results = await search360(query, num);
+  if (results.length === 0) {
+    results = await searchBaidu(query, num);
+  }
   if (results.length === 0) {
     results = await searchBing(query, num);
   }
