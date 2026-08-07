@@ -3,8 +3,8 @@ FROM node:18-alpine
 WORKDIR /app
 
 # 复制依赖文件并安装
-COPY package.json package-lock.json ./
-RUN npm ci --production
+COPY package*.json ./
+RUN npm install --production
 
 # 复制源码和前端页面
 COPY server.js .
