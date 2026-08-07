@@ -14,69 +14,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname)));
 
-// ===== 自动暂停（节省 Railway 额度）=====
-// 核查完成 + 5分钟无新请求 → 自动暂停服务
-const RAILWAY_TOKEN = process.env.RAILWAY_TOKEN || '';
-const RAILWAY_SERVICE_ID = process.env.RAILWAY_SERVICE_ID || '';
-const RAILWAY_ENVIRONMENT_ID = process.env.RAILWAY_ENVIRONMENT_ID || '';
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5分钟
-const RAILWAY_API = 'https://backboard.railway.com/graphql/v2';
-let idleTimer = null;
-
-async function pauseService() {
-  if (!RAILWAY_TOKEN || !RAILWAY_SERVICE_ID || !RAILWAY_ENVIRONMENT_ID) {
-    console.log('[自动暂停] 未配置 RAILWAY_TOKEN / RAILWAY_SERVICE_ID / RAILWAY_ENVIRONMENT_ID，跳过');
-    return false;
-  }
-  console.log('[自动暂停] 正在暂停服务...');
-  try {
-    // 1. 查询最新 deployment ID
-    const queryResp = await axios.post(RAILWAY_API, {
-      query: `query { deployments(first: 1, input: { serviceId: "${RAILWAY_SERVICE_ID}", environmentId: "${RAILWAY_ENVIRONMENT_ID}" }) { edges { node { id status } } } }`
-    }, {
-      headers: { 'Authorization': `Bearer ${RAILWAY_TOKEN}`, 'Content-Type': 'application/json' },
-      timeout: 10000
-    });
-    if (queryResp.data?.errors) {
-      console.error('[自动暂停] 查询错误:', JSON.stringify(queryResp.data.errors));
-      return false;
-    }
-    const edges = queryResp.data?.data?.deployments?.edges || [];
-    if (edges.length === 0) {
-      console.log('[自动暂停] 未找到 deployment，跳过');
-      return false;
-    }
-    const depId = edges[0].node.id;
-    const status = edges[0].node.status;
-    if (status === 'STOPPED' || status === 'CRASHED' || status === 'REMOVED') {
-      console.log(`[自动暂停] 当前状态 ${status}，无需暂停`);
-      return true;
-    }
-    // 2. 停止 deployment
-    const stopResp = await axios.post(RAILWAY_API, {
-      query: `mutation { deploymentStop(id: "${depId}") { id status } }`
-    }, {
-      headers: { 'Authorization': `Bearer ${RAILWAY_TOKEN}`, 'Content-Type': 'application/json' },
-      timeout: 10000
-    });
-    if (stopResp.data?.errors) {
-      console.error('[自动暂停] 停止错误:', JSON.stringify(stopResp.data.errors));
-      return false;
-    }
-    console.log('[自动暂停] 服务已暂停');
-    return true;
-  } catch (e) {
-    console.error('[自动暂停] 失败:', e.response?.data?.errors || e.message);
-    return false;
-  }
-}
-
-function scheduleAutoPause() {
-  if (idleTimer) clearTimeout(idleTimer);
-  if (!RAILWAY_TOKEN || !RAILWAY_SERVICE_ID || !RAILWAY_ENVIRONMENT_ID) return;
-  idleTimer = setTimeout(() => pauseService(), IDLE_TIMEOUT_MS);
-  console.log(`[自动暂停] ${IDLE_TIMEOUT_MS / 60000}分钟后无活动将自动暂停`);
-}
+//（Railway 自动暂停已移除，当前部署在 Sealos）
 
 // ===== 浏览器请求头 =====
 const HEADERS = {
@@ -85,18 +23,51 @@ const HEADERS = {
   'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 };
 
-// ===== 查证网站优先级 =====
-// 注意：只放能返回稳定可访问内容的权威站；排除结果质量差或常返回搜索占位页的站点
+// ===== 查证网站优先级（按查证资料方式.docx）=====
+// 查证顺序：教材 → 辞海 → 权威媒体 → 领导人讲话库 → 术语在线 → 植物图像库 → 汉典 → 识典古籍 → 国学大师 → 行政区划 → 古诗文网 → 百度百科
 const PRIORITY_SITES = [
+  // (1) 最新教材 - 中小学智慧平台
   'basic.smartedu.cn', 'smartedu.cn',
+  // (4a) 辞海网络版 - 各种词条
   'cihai.com.cn',
-  'zdic.net',
-  'people.com.cn', 'gmw.cn', 'xinhuanet.com',
+  // (4b) 人民网、光明网、新华网、解放军报、政府官网 - 时政/统计/机构名
+  'people.com.cn', 'gmw.cn', 'xinhuanet.com', '81.cn', 'gov.cn',
+  // (4c) 国家领导人讲话数据库
+  'jhsjk.people.cn',
+  // (4d) 术语在线 - 专业术语
   'termonline.cn',
+  // (4e) 中国植物图像库 - 植物名称
+  'ppbc.iplant.cn',
+  // (4f) 汉典 - 字词/文言文
+  'zdic.net',
+  // 识典古籍 - 古籍扫描
+  'shidianguji.com',
+  // (4g) 国学大师 - 汉典补充
+  'guoxuedashi.com',
+  // (4h) 全国行政区划信息查询 - 国家标准地名
+  'xzqh.mca.gov.cn',
+  // 古诗文网 - 古诗文原文
   'gushiwen.org',
+  // 党建网 - 领导人讲话/政策
   '12371.cn',
+  // 百度百科 - 通用参考
   'baike.baidu.com',
 ];
+
+// 按内容类型映射优先查证网站（优先级从高到低）
+const CONTENT_TYPE_SITES = {
+  '古诗文献':   ['gushiwen.org', 'shidianguji.com', 'guoxuedashi.com', 'zdic.net', 'cihai.com.cn', 'basic.smartedu.cn'],
+  '出处标注':   ['basic.smartedu.cn', 'cihai.com.cn', 'gushiwen.org', 'shidianguji.com'],
+  '引用文本':   ['jhsjk.people.cn', 'people.com.cn', 'gushiwen.org', 'shidianguji.com', 'guoxuedashi.com', 'zdic.net'],
+  '统计数据':   ['people.com.cn', 'gmw.cn', 'xinhuanet.com', 'gov.cn', '81.cn'],
+  '字词注释':   ['zdic.net', 'cihai.com.cn', 'guoxuedashi.com'],
+  '历史日期':   ['people.com.cn', 'gmw.cn', 'xinhuanet.com', 'baike.baidu.com'],
+  '领导人讲话': ['jhsjk.people.cn', 'people.com.cn', 'gov.cn', 'xinhuanet.com'],
+  '术语':       ['termonline.cn', 'cihai.com.cn', 'baike.baidu.com'],
+  '植物名称':   ['ppbc.iplant.cn', 'baike.baidu.com'],
+  '地名':       ['xzqh.mca.gov.cn', 'baike.baidu.com'],
+  '人名':       ['cihai.com.cn', 'baike.baidu.com', 'people.com.cn'],
+};
 
 // ===== 工具函数 =====
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -131,7 +102,7 @@ async function getValidSources(results, item, max = 3) {
   if (item.definition) tokens.push(normalizeText(item.definition).substring(0, 6));
   if (item.content) tokens.push(normalizeText(item.content).substring(0, 10));
 
-  const sorted = sortByPriority(results);
+  const sorted = sortByPriority(results, item.type);
   const valid = [];
   for (const r of sorted) {
     if (valid.length >= max) break;
@@ -175,10 +146,20 @@ async function getValidSources(results, item, max = 3) {
   return valid;
 }
 
-function sortByPriority(results) {
+function sortByPriority(results, contentType = '') {
+  const typeSites = CONTENT_TYPE_SITES[contentType] || [];
   return results.sort((a, b) => {
-    const ap = PRIORITY_SITES.findIndex(s => (a.url || '').includes(s));
-    const bp = PRIORITY_SITES.findIndex(s => (b.url || '').includes(s));
+    const aUrl = a.url || '';
+    const bUrl = b.url || '';
+    // 优先：内容类型专属网站
+    const aTypeIdx = typeSites.findIndex(s => aUrl.includes(s));
+    const bTypeIdx = typeSites.findIndex(s => bUrl.includes(s));
+    if (aTypeIdx !== -1 && bTypeIdx !== -1) return aTypeIdx - bTypeIdx;
+    if (aTypeIdx !== -1) return -1;
+    if (bTypeIdx !== -1) return 1;
+    // 其次：通用优先级
+    const ap = PRIORITY_SITES.findIndex(s => aUrl.includes(s));
+    const bp = PRIORITY_SITES.findIndex(s => bUrl.includes(s));
     if (ap === -1 && bp === -1) return 0;
     if (ap === -1) return 1;
     if (bp === -1) return -1;
@@ -736,6 +717,46 @@ function identifyItems(pages) {
         pageNum,
       });
     }
+
+    // 7. 领导人讲话引用：提到领导人+引号引用
+    const leaderNames = '(习近平|李克强|李强|栗战书|汪洋|王沪宁|赵乐际|韩正|胡锦涛|温家宝|江泽民|朱镕基|邓小平|毛泽东|周恩来|国家主席|总书记|总理|总理说|主席说|总书记说';
+    const leaderRe = new RegExp(leaderNames + ')[^""""\'\\n]{0,30}["""\'\']([^""""\'\\n]{5,80})["""\'\']', 'g');
+    while ((m = leaderRe.exec(text)) !== null) {
+      const leader = m[1];
+      const quote = m[2].trim();
+      // 排除已被引用文本覆盖的
+      const covered = items.some(it => it.quoteText && normalizeText(it.quoteText).includes(normalizeText(quote).substring(0, 8)));
+      if (covered) continue;
+      id++;
+      items.push({
+        id, page: pageLabel, type: '领导人讲话',
+        content: `${leader}："${quote}"`,
+        leader, quoteText: quote,
+        context: text.substring(Math.max(0, m.index - 20), m.index + m[0].length + 20),
+        position: m.index,
+        pageNum,
+      });
+    }
+
+    // 8. 科技术语/专业术语：带"称为/叫做/是指/术语"等标注的
+    const termRe = /(?:称为|叫做|是指|术语|简称|缩写|定义)[：:]?\s*([^\n。；，！？""""''《》【】]{2,15})/g;
+    while ((m = termRe.exec(text)) !== null) {
+      const term = m[1].trim();
+      // 排除太短或纯数字
+      if (term.length < 2) continue;
+      // 排除已被其他类型覆盖的
+      const covered = items.some(it => it.context.includes(m[0]));
+      if (covered) continue;
+      id++;
+      items.push({
+        id, page: pageLabel, type: '术语',
+        content: term,
+        termText: term,
+        context: text.substring(Math.max(0, m.index - 30), m.index + m[0].length + 30),
+        position: m.index,
+        pageNum,
+      });
+    }
   }
 
   // 去重（基于content相似度 + 同标题去重）并提取题号
@@ -1015,6 +1036,74 @@ async function verifyItem(item) {
         }
       }
       result.sources = await getValidSources(results, item);
+
+    } else if (item.type === '领导人讲话') {
+      // 优先搜索国家领导人讲话数据库
+      const query = `${item.leader} 讲话 ${item.quoteText.substring(0, 20)}`;
+      console.log(`  [搜索] ${query}`);
+      const results = await searchWeb(query, 8);
+      await sleep(800);
+
+      const allSnippets = results.map(r => r.snippet).join(' ');
+      const found = findInText(item.quoteText, allSnippets);
+
+      if (found.found && found.exact) {
+        result.verdict = '内容无误';
+        result.notes = '领导人讲话引用与搜索结果一致';
+      } else if (found.found && !found.exact && found.diffs) {
+        result.verdict = '存在错误';
+        const diffStr = found.diffs.map(d => `"${d.pdf}"→"${d.source}"`).join('，');
+        result.notes = `原文为"${found.sourceText}"，稿件作"${item.quoteText}"。差异：${diffStr}`;
+        result.suggestion = `建议改为原文"${found.sourceText}"`;
+      } else if (results.length > 0) {
+        // 尝试取页面内容精确比对
+        let pageFound = false;
+        const pageSources = await getValidSources(results, item, 2);
+        for (const src of pageSources) {
+          const pageText = await fetchPageText(src.url);
+          await sleep(400);
+          const f = findInText(item.quoteText, pageText);
+          if (f.found) {
+            pageFound = true;
+            if (f.exact) {
+              result.verdict = '内容无误';
+              result.notes = '领导人讲话引用与原文一致';
+            } else if (f.diffs) {
+              result.verdict = '存在错误';
+              const diffStr = f.diffs.map(d => `"${d.pdf}"→"${d.source}"`).join('，');
+              result.notes = `原文为"${f.sourceText}"，稿件作"${item.quoteText}"。差异：${diffStr}`;
+              result.suggestion = `建议改为原文"${f.sourceText}"`;
+            }
+            break;
+          }
+        }
+        if (!pageFound) {
+          result.verdict = '存疑待商';
+          result.notes = '搜索到相关结果，但未找到完全匹配的讲话原文，建议人工核查';
+        }
+      }
+      result.sources = await getValidSources(results, item);
+
+    } else if (item.type === '术语') {
+      // 优先搜索术语在线
+      const query = `${item.termText} 术语 定义`;
+      console.log(`  [搜索] ${query}`);
+      const results = await searchWeb(query, 5);
+      await sleep(800);
+
+      if (results.length > 0) {
+        const allText = results.map(r => r.title + ' ' + r.snippet).join(' ');
+        const normAll = normalizeText(allText);
+        const normTerm = normalizeText(item.termText);
+        if (normAll.includes(normTerm)) {
+          result.verdict = '内容无误';
+          result.notes = `术语"${item.termText}"在搜索结果中找到`;
+        } else {
+          result.verdict = '存疑待商';
+          result.notes = '搜索到相关结果，但未完全确认术语，建议人工核查';
+        }
+      }
+      result.sources = await getValidSources(results, item);
     }
   } catch (e) {
     result.verdict = '无法核实';
@@ -1026,14 +1115,7 @@ async function verifyItem(item) {
 
 // ===== API =====
 app.get('/api/health', (req, res) => {
-  // 健康检查不计入活动，不重置暂停计时器
-  res.json({ status: 'ok', time: new Date().toISOString(), autoPause: !!(RAILWAY_TOKEN && RAILWAY_SERVICE_ID && RAILWAY_ENVIRONMENT_ID) });
-});
-
-// 手动暂停端点（前端可调用）
-app.post('/api/pause', async (req, res) => {
-  const ok = await pauseService();
-  res.json({ success: ok });
+  res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
 // 调试：测试各搜索引擎连通性
@@ -1078,9 +1160,6 @@ app.post('/api/check', async (req, res) => {
     return res.status(400).json({ error: '需要 pages 数组' });
   }
 
-  // 有核查活动，重置暂停计时器
-  scheduleAutoPause();
-
   // SSE
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1115,13 +1194,10 @@ app.post('/api/check', async (req, res) => {
     console.log(`  完成: 正确${summary.ok} 错误${summary.error} 存疑${summary.doubt} 无法核实${summary.unknown}\n`);
     res.write(`data: ${JSON.stringify({ type: 'done', summary })}\n\n`);
     res.end();
-    // 核查完成后重新计时
-    scheduleAutoPause();
   } catch (e) {
     console.error('核查出错:', e);
     res.write(`data: ${JSON.stringify({ type: 'error', message: e.message })}\n\n`);
     res.end();
-    scheduleAutoPause();
   }
 });
 
@@ -1131,14 +1207,13 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  文件核查服务已启动`);
   console.log(`  端口: ${PORT}`);
   console.log(`  本地访问: http://localhost:${PORT}/文件核查.html`);
-  console.log(`  自动暂停: ${RAILWAY_TOKEN && RAILWAY_SERVICE_ID && RAILWAY_ENVIRONMENT_ID ? '已启用（5分钟无活动）' : '未启用（需配置环境变量）'}`);
   const apiList = [];
   if (SERPAPI_KEY) apiList.push('SerpAPI');
   if (BING_SEARCH_KEY) apiList.push('BingSearch');
   if (GOOGLE_API_KEY && GOOGLE_CX) apiList.push('GoogleCSE');
   if (BRAVE_API_KEY) apiList.push('Brave');
   console.log(`  搜索API: ${apiList.length ? apiList.join('/') : '未配置（依赖HTML抓取，在云IP下可能被屏蔽）'}`);
+  console.log(`  查证网站: ${PRIORITY_SITES.length}个优先站 + ${Object.keys(CONTENT_TYPE_SITES).length}种内容类型映射`);
   console.log(`========================================\n`);
-  // 启动时开始计时
-  scheduleAutoPause();
 });
+
