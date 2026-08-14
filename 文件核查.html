@@ -6,6 +6,10 @@
   <title>文件核查</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
+  <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script>window.PDFLib || document.write('<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"><\/script>');</script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script>window.JSZip || document.write('<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"><\/script>');</script>
   <style>
     :root {
       --primary: #ff6b8a;
@@ -257,6 +261,11 @@
         <div class="summary-card warn"><div class="num" id="sumWarn">0</div><div class="label">存疑待商</div></div>
         <div class="summary-card gray"><div class="num" id="sumUnknown">0</div><div class="label">无法核实</div></div>
       </div>
+      <!-- 批注导出 -->
+      <div class="action-bar" style="margin-bottom:14px;">
+        <button class="btn btn-primary" id="annotateBtn" disabled>📝 生成带批注的新文件</button>
+        <span style="font-size:12px; color:var(--text-secondary);">把核查结果以批注形式标注到原文件上（PDF / Word）</span>
+      </div>
       <!-- 表格 -->
       <div class="table-wrap" id="resultTableWrap">
         <table>
@@ -290,6 +299,8 @@
     : '';
 
   let selectedFile = null;
+  let checkResults = [];   // 保存核查结果，用于生成批注文件
+  let annotateReady = false;
 
   const $ = id => document.getElementById(id);
 
@@ -382,6 +393,9 @@
 
     $('checkBtn').disabled = true;
     $('checkBtn').classList.remove('ready');
+    $('annotateBtn').disabled = true;
+    annotateReady = false;
+    checkResults = [];
     $('progressPanel').classList.add('show');
     $('resultPanel').classList.remove('show');
     $('resultTableWrap').classList.remove('show');
@@ -455,6 +469,17 @@
             const pct = 25 + Math.round((checkedItems / totalItems) * 70);
             setProgress(pct, `${pct}% (${checkedItems}/${totalItems})`);
 
+            // 收集结果，供生成批注文件
+            checkResults.push({
+              idx: r.idx,
+              page: r.page,
+              content: r.content || '',
+              verdict: r.verdict || '无法核实',
+              sources: r.sources || [],
+              notes: r.notes || '',
+              suggestion: r.suggestion || ''
+            });
+
             const sourceLinks = (r.sources || []).map(s => {
               const unverified = s.verified === false ? '<span class="source-unverified">[未验证]</span> ' : '';
               return `<a class="source-link" href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${unverified}${escapeHtml(s.title)}</a>`;
@@ -488,6 +513,10 @@
             $('sumUnknown').textContent = s.unknown;
             $('summaryCards').style.display = 'flex';
 
+            // 核查完成，允许生成批注文件
+            annotateReady = true;
+            $('annotateBtn').disabled = false;
+
           } else if (data.type === 'error') {
             log('服务端错误: ' + data.message, 'err');
           }
@@ -504,14 +533,293 @@
     }
   });
 
+  // ===== 生成带批注的新文件 =====
+  function buildAnnotationText(r) {
+    const lines = [];
+    lines.push(`【结论】${r.verdict}`);
+    lines.push(`【核查内容】${r.content}`);
+    if (r.sources && r.sources.length) {
+      lines.push('【核查依据】');
+      r.sources.forEach((s, i) => {
+        lines.push(`${i + 1}. ${s.title}${s.verified === false ? '（未验证）' : ''} — ${s.url}`);
+      });
+    }
+    if (r.notes) lines.push(`【说明】${r.notes}`);
+    if (r.suggestion) lines.push(`【建议】${r.suggestion}`);
+    return lines.join('\n');
+  }
+
+  function downloadBlob(blob, filename) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  // ---- PDF：在原 PDF 对应页面加文本批注 ----
+  async function annotatePdf() {
+    const arrayBuffer = await selectedFile.arrayBuffer();
+    const pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+    const pageCount = pdfDoc.getPageCount();
+    const perPageCount = {};
+    let added = 0, skipped = 0;
+
+    for (const r of checkResults) {
+      const pageNum = parseInt(r.page, 10);
+      if (isNaN(pageNum) || pageNum < 1 || pageNum > pageCount) { skipped++; continue; }
+      const page = pdfDoc.getPage(pageNum - 1);
+      perPageCount[pageNum] = (perPageCount[pageNum] || 0) + 1;
+      const size = 24;
+      const x = 18;
+      const y = page.getHeight() - 40 - (perPageCount[pageNum] - 1) * (size + 4);
+
+      // 手动构造 PDF 文本批注（pdf-lib 无内置 createAnnotation，需写底层对象）
+      const annotObj = pdfDoc.context.obj({
+        Type: 'Annot',
+        Subtype: 'Text',
+        Rect: [x, y, x + size, y + size],
+        Contents: buildAnnotationText(r),
+        T: `[${r.verdict}] ${r.content.substring(0, 20)}`,
+        F: 4,               // 打印时显示
+        C: [1, 0.42, 0.54], // 粉色图标
+        Name: 'Comment',
+      });
+      const annotRef = pdfDoc.context.register(annotObj);
+      const annots = page.node.Annots() || pdfDoc.context.obj([]);
+      annots.push(annotRef);
+      page.node.set(PDFLib.PDFName.of('Annots'), annots);
+      added++;
+    }
+
+    if (added === 0) { throw new Error('未能定位核查内容到对应页码，无法生成批注'); }
+
+    const bytes = await pdfDoc.save();
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const name = selectedFile.name.replace(/\.pdf$/i, '') + '_核查批注.pdf';
+    downloadBlob(blob, name);
+    return { added, skipped };
+  }
+
+  // ---- Word（docx）：在原文档对应文本位置插入批注 ----
+  function decodeXml(s) {
+    return s
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)));
+  }
+  function escapeXml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+  }
+  // 多行文本 → w:p / w:r / w:br 结构
+  function textToRuns(text) {
+    const lines = (text || '').split('\n');
+    return lines.map((line, i) => {
+      const run = `<w:r><w:t xml:space="preserve">${escapeXml(line)}</w:t></w:r>`;
+      return i < lines.length - 1 ? run + '<w:r><w:br/></w:r>' : run;
+    }).join('');
+  }
+
+  function makeCommentNode(id, text) {
+    return `<w:comment w:id="${id}" w:author="文件核查" w:date="${new Date().toISOString()}" w:initials="FH"><w:p>${textToRuns(text)}</w:p></w:comment>`;
+  }
+
+  async function annotateDocx() {
+    const arrayBuffer = await selectedFile.arrayBuffer();
+    const zip = await JSZip.loadAsync(arrayBuffer);
+
+    let documentXml = await zip.file('word/document.xml').async('string');
+    if (!documentXml) { throw new Error('未找到 word/document.xml，不是有效的 docx 文件'); }
+
+    // 1) 收集所有 w:t 文本片段，构建全文索引
+    const spans = [];
+    const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+    let m;
+    while ((m = re.exec(documentXml)) !== null) {
+      const text = decodeXml(m[1]);
+      spans.push({ start: m.index, end: m.index + m[0].length, text });
+    }
+    let fullText = '';
+    const charToSpan = [];
+    for (let i = 0; i < spans.length; i++) {
+      for (let k = 0; k < spans[i].text.length; k++) charToSpan.push(i);
+      fullText += spans[i].text;
+    }
+
+    // 2) 逐条定位核查内容，插入批注标记
+    // 先确定已有 comments.xml 的最大批注 id（若存在），新批注从其后编号，保证两处 id 一致
+    let nextId = 0;
+    const existingComments = zip.file('word/comments.xml');
+    if (existingComments) {
+      const oldComments = await existingComments.async('string');
+      const idRe = /w:id="(\d+)"/g;
+      let im;
+      while ((im = idRe.exec(oldComments)) !== null) nextId = Math.max(nextId, parseInt(im[1], 10) + 1);
+    }
+    // 收集所有 run（<w:r>）开始/结束标签位置，批注标记必须插在 run 之外
+    const runStarts = [];
+    const runEnds = [];
+    {
+      const ro = /<w:r(?:\s[^>]*)?>/g;
+      let rm;
+      while ((rm = ro.exec(documentXml)) !== null) runStarts.push(rm.index);
+      const rc = /<\/w:r>/g;
+      while ((rm = rc.exec(documentXml)) !== null) runEnds.push(rm.index);
+    }
+    function runRangeOf(spanPos) {
+      // 找到包含该位置的 run：最后一个 start <= pos 的 run
+      let i = -1;
+      for (let k = 0; k < runStarts.length; k++) { if (runStarts[k] <= spanPos) i = k; else break; }
+      if (i < 0 || i >= runEnds.length) return null;
+      return { start: runStarts[i], end: runEnds[i] + 6 }; // +6 = '</w:r>'.length
+    }
+
+    let added = 0, skipped = 0;
+    const commentNodes = [];
+    const insertions = [];  // { start, end, startMark, endMark }，先收集后从后往前插入
+
+    for (const r of checkResults) {
+      const needle = (r.content || '').trim();
+      if (!needle) { skipped++; continue; }
+      let idx = fullText.indexOf(needle);
+      if (idx < 0) {
+        // 折叠空白后再尝试匹配
+        const foldedNeedle = needle.replace(/\s+/g, ' ');
+        const foldedFull = fullText.replace(/\s+/g, ' ');
+        const ci = foldedFull.indexOf(foldedNeedle);
+        if (ci >= 0) {
+          // 把折叠全文中的位置映射回原全文：数原文本前 ci 个非空白字符
+          let count = 0, j = 0;
+          for (; j < fullText.length && count < ci; j++) if (!/\s/.test(fullText[j])) count++;
+          // 再匹配折叠 needle 的首段
+          const firstSeg = foldedNeedle.split(' ')[0];
+          idx = fullText.indexOf(firstSeg, j);
+        }
+        if (idx < 0) {
+          const noSpace = needle.replace(/\s+/g, '');
+          const fullNoSpace = fullText.replace(/\s+/g, '');
+          const ni = fullNoSpace.indexOf(noSpace);
+          if (ni >= 0) {
+            // 用 noSpace 在 fullNoSpace 的位置映射回 fullText：数前 ni 个非空白字符的偏移
+            let count = 0, j = 0;
+            for (; j < fullText.length && count < ni; j++) if (!/\s/.test(fullText[j])) count++;
+            idx = j;
+          }
+        }
+      }
+      if (idx < 0) { skipped++; continue; }
+
+      const sIdx = charToSpan[idx];
+      const eIdx = charToSpan[idx + needle.length - 1];
+      // 跨段落的不处理（批注只挂段落内）
+      const between = documentXml.slice(spans[sIdx].start, spans[eIdx].end);
+      if (/<w:p[ >]/.test(between) || /<\/w:p>/.test(between)) { skipped++; continue; }
+
+      const sRun = runRangeOf(spans[sIdx].start);
+      const eRun = runRangeOf(spans[eIdx].end - 1);
+      if (!sRun || !eRun) { skipped++; continue; }
+
+      const id = nextId++;
+      const startMark = `<w:commentRangeStart w:id="${id}"/>`;
+      const endMark = `<w:commentRangeEnd w:id="${id}"/><w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="${id}"/></w:r>`;
+
+      insertions.push({ start: sRun.start, end: eRun.end, startMark, endMark });
+      commentNodes.push(makeCommentNode(id, buildAnnotationText(r)));
+      added++;
+    }
+
+    if (added === 0) { throw new Error('未能定位任何核查内容到原文中，无法生成批注'); }
+
+    // 所有插入点拆成独立操作，按位置从后往前逐个插入，避免坐标偏移
+    const ops = [];
+    for (const ins of insertions) {
+      ops.push({ pos: ins.start, mark: ins.startMark });
+      ops.push({ pos: ins.end, mark: ins.endMark });
+    }
+    ops.sort((a, b) => b.pos - a.pos);
+    for (const op of ops) {
+      documentXml = documentXml.slice(0, op.pos) + op.mark + documentXml.slice(op.pos);
+    }
+
+    // 3) 写入/合并 word/comments.xml
+    let commentsXml = '';
+    if (existingComments) {
+      let old = await existingComments.async('string');
+      old = old.replace(/<\/w:comments>\s*$/, '');
+      commentsXml = old + '\n' + commentNodes.join('\n') + '\n</w:comments>';
+    } else {
+      commentsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+        '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">\n' +
+        commentNodes.join('\n') + '\n</w:comments>';
+    }
+    zip.file('word/comments.xml', commentsXml);
+
+    // 4) 更新 [Content_Types].xml
+    const ctName = '[Content_Types].xml';
+    let ctXml = await zip.file(ctName).async('string');
+    if (ctXml.indexOf('wordprocessingml.comments+xml') < 0) {
+      ctXml = ctXml.replace(/<\/Types>/, '<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/></Types>');
+      zip.file(ctName, ctXml);
+    }
+
+    // 5) 更新 word/_rels/document.xml.rels
+    const relsName = 'word/_rels/document.xml.rels';
+    let relsXml = await zip.file(relsName).async('string');
+    if (relsXml.indexOf('relationships/comments') < 0) {
+      const idRe = /Id="rId(\d+)"/g;
+      let maxRid = 0, im;
+      while ((im = idRe.exec(relsXml)) !== null) maxRid = Math.max(maxRid, parseInt(im[1], 10));
+      relsXml = relsXml.replace(/<\/Relationships>/, `<Relationship Id="rId${maxRid + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/></Relationships>`);
+      zip.file(relsName, relsXml);
+    }
+
+    // 6) 重新打包下载
+    const blob = await zip.generateAsync({
+      type: 'blob',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      compression: 'DEFLATE'
+    });
+    const name = selectedFile.name.replace(/\.docx$/i, '') + '_核查批注.docx';
+    downloadBlob(blob, name);
+    return { added, skipped };
+  }
+
+  // ===== 生成批注文件按钮 =====
+  $('annotateBtn').addEventListener('click', async () => {
+    if (!annotateReady || !selectedFile || checkResults.length === 0) return;
+    const btn = $('annotateBtn');
+    btn.disabled = true;
+    log('正在生成带批注的新文件...', 'info');
+    try {
+      const ext = (selectedFile.name.split('.').pop() || '').toLowerCase();
+      let res;
+      if (ext === 'pdf') {
+        res = await annotatePdf();
+      } else if (ext === 'docx') {
+        res = await annotateDocx();
+      } else {
+        throw new Error('当前文件格式不支持生成批注，请使用 PDF 或 Word（docx）');
+      }
+      log(`批注文件生成完成：成功标注 ${res.added} 条，跳过 ${res.skipped} 条（未定位到原文）`, 'ok');
+    } catch (err) {
+      log('生成批注失败: ' + err.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   // ===== 重置 =====
   $('resetBtn').addEventListener('click', () => {
     selectedFile = null;
+    checkResults = [];
+    annotateReady = false;
     $('pdfInput').value = '';
     $('pdfFileName').textContent = '';
     $('pdfUploadCard').classList.remove('has-file');
     $('checkBtn').disabled = true;
     $('checkBtn').classList.remove('ready');
+    $('annotateBtn').disabled = true;
     $('progressPanel').classList.remove('show');
     $('resultPanel').classList.remove('show');
     $('resultTableWrap').classList.remove('show');
