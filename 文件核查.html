@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>文件核查</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
   <style>
     :root {
       --primary: #ff6b8a;
@@ -211,7 +212,7 @@
 <body>
   <div class="header">
   <h1>文件核查</h1>
-  <div class="subtitle">上传试卷 PDF，自动提取文本并联网核查古诗文、字词、数据、出处等内容</div>
+  <div class="subtitle">上传试卷 PDF 或 Word，自动提取文本并联网核查古诗文、字词、数据、出处等内容</div>
 </div>
 
 <div class="container">
@@ -219,10 +220,10 @@
   <div class="section">
     <div class="section-title"><span class="step-num">1</span>上传文件</div>
     <div class="upload-card" id="pdfUploadCard">
-      <input type="file" id="pdfInput" accept=".pdf">
+      <input type="file" id="pdfInput" accept=".pdf,.docx,.doc">
       <div class="upload-icon">📄</div>
-      <div class="upload-title">上传试卷 PDF</div>
-      <div class="upload-desc">支持 PDF，点击或拖拽到此处</div>
+      <div class="upload-title">上传试卷 PDF / Word</div>
+      <div class="upload-desc">支持 PDF、Word（docx），点击或拖拽到此处</div>
       <div class="file-name" id="pdfFileName"></div>
     </div>
   </div>
@@ -230,7 +231,7 @@
   <!-- 步骤2：开始核查 -->
   <div class="section">
     <div class="section-title"><span class="step-num">2</span>开始核查</div>
-    <div class="section-desc">点击按钮后自动提取PDF文本、识别可核查内容，并联网搜索权威网站逐条比对。</div>
+    <div class="section-desc">点击按钮后自动提取文本、识别可核查内容，并联网搜索权威网站逐条比对。</div>
     <div class="action-bar">
       <button class="btn btn-primary" id="checkBtn" disabled>开始核查</button>
       <button class="btn btn-outline" id="resetBtn">重置</button>
@@ -276,7 +277,7 @@
   </div>
 
   <div class="footer">
-    文件核查 · PDF提取 + 联网搜索 + 文本比对 · © 2026
+    文件核查 · PDF/Word 提取 + 联网搜索 + 文本比对 · © 2026
   </div>
 </div>
 
@@ -288,9 +289,45 @@
     ? 'http://localhost:3456'
     : '';
 
-  let pdfFile = null;
+  let selectedFile = null;
 
   const $ = id => document.getElementById(id);
+
+  // ===== 提取文本（PDF / Word） =====
+  async function extractTextFromFile(file) {
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (ext === 'pdf') {
+      return extractPdfText(file);
+    }
+    if (ext === 'docx') {
+      return extractDocxText(file);
+    }
+    throw new Error('暂不支持的文件格式：' + ext + '，请使用 PDF 或 Word（docx）');
+  }
+
+  async function extractPdfText(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const totalPages = pdf.numPages;
+    const pages = [];
+    for (let i = 1; i <= totalPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map(item => item.str).join('');
+      pages.push({ pageNum: i, text: pageText });
+    }
+    return pages;
+  }
+
+  async function extractDocxText(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await mammoth.extractRawText({ arrayBuffer });
+    if (result.messages && result.messages.length) {
+      console.log('mammoth messages:', result.messages);
+    }
+    const text = result.value || '';
+    return [{ pageNum: '文档', text }];
+  }
 
   // ===== 工具函数 =====
   function setProgress(pct, text) {
@@ -318,11 +355,11 @@
     return `<span class="verdict ${cls}">${label}</span>`;
   }
 
-  // ===== 上传 PDF =====
+  // ===== 上传文件 =====
   $('pdfInput').addEventListener('change', e => {
-    pdfFile = e.target.files[0];
-    if (!pdfFile) return;
-    $('pdfFileName').textContent = pdfFile.name;
+    selectedFile = e.target.files[0];
+    if (!selectedFile) return;
+    $('pdfFileName').textContent = selectedFile.name;
     $('pdfUploadCard').classList.add('has-file');
     $('checkBtn').disabled = false;
     $('checkBtn').classList.add('ready');
@@ -341,7 +378,7 @@
 
   // ===== 开始核查 =====
   $('checkBtn').addEventListener('click', async () => {
-    if (!pdfFile) return;
+    if (!selectedFile) return;
 
     $('checkBtn').disabled = true;
     $('checkBtn').classList.remove('ready');
@@ -354,24 +391,11 @@
 
     try {
       setProgress(2, '2%');
-      log('正在加载 PDF...', 'info');
+      const ext = (selectedFile.name.split('.').pop() || '').toLowerCase();
+      log(`正在读取 ${ext.toUpperCase()} 文件...`, 'info');
 
-      const arrayBuffer = await pdfFile.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      const totalPages = pdf.numPages;
-      log(`PDF 加载完成，共 ${totalPages} 页`, 'ok');
-
-      const pages = [];
-      for (let i = 1; i <= totalPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items.map(item => item.str).join('');
-        pages.push({ pageNum: i, text: pageText });
-        const pct = 2 + Math.round((i / totalPages) * 18);
-        setProgress(pct, pct + '%');
-        log(`  第 ${i}/${totalPages} 页提取完成`);
-      }
-      log('文本提取完成', 'ok');
+      const pages = await extractTextFromFile(selectedFile);
+      log(`文本提取完成，共 ${pages.length} 页/段`, 'ok');
 
       setProgress(22, '22%');
       log('正在发送文本到核查服务...', 'info');
@@ -482,7 +506,7 @@
 
   // ===== 重置 =====
   $('resetBtn').addEventListener('click', () => {
-    pdfFile = null;
+    selectedFile = null;
     $('pdfInput').value = '';
     $('pdfFileName').textContent = '';
     $('pdfUploadCard').classList.remove('has-file');
