@@ -494,6 +494,10 @@
 
             const sourceLinks = (r.sources || []).map(s => {
               const unverified = s.verified === false ? '<span class="source-unverified">[未验证]</span> ' : '';
+              // v22: 本地校验类来源无外链，展示为不可点击文本
+              if (!s.url || s.url === 'javascript:;') {
+                return `<span class="source-unverified">${unverified}${escapeHtml(s.title)}</span>`;
+              }
               return `<a class="source-link" href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${unverified}${escapeHtml(s.title)}</a>`;
             }).join('') || '—';
 
