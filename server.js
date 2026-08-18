@@ -1564,6 +1564,32 @@ app.get('/api/debug/search', async (req, res) => {
   res.json({ query, results, env: { node: process.version } });
 });
 
+// 调试：只识别不搜索，秒返回（用于排查提取文本格式问题）
+app.post('/api/debug/identify', (req, res) => {
+  const { pages } = req.body;
+  if (!pages || !Array.isArray(pages)) {
+    return res.status(400).json({ error: '需要 pages 数组' });
+  }
+  try {
+    const items = identifyItems(pages);
+    res.json({
+      count: items.length,
+      pages: pages.map(p => ({ pageNum: p.pageNum, textLength: (p.text || '').length, textPreview: (p.text || '').slice(0, 500) })),
+      items: items.map(it => ({
+        id: it.id,
+        type: it.type,
+        content: it.content,
+        author: it.author || '',
+        title: it.title || '',
+        page: it.page,
+        context: it.context || '',
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
 app.post('/api/check', async (req, res) => {
   const { pages } = req.body;
 
