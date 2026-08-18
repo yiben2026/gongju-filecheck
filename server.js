@@ -544,7 +544,9 @@ const TITLE_SKIP = ['考点','部分','语文','数学','英语','物理','化�
 const TITLE_SKIP_TAIL = ['效果','作用','原因','方法','特点','意义','价值','表现','结构','表达','方式','角度','关系','影响','过程','结果','背景','目的','意图','好处','妙处','内容','标题','开头','结尾','段落','句子','词语','文化','常识','风格','语言','情感','主旨','观点','态度','形象','意象','意境','线索','脉络','层次','顺序','详略','修辞','写法','手法','特色','思路','技巧','策略','规则','格式','标准','要点','提示','注释','示例','范例','任务','文本','材料','小贴士','批注','评价','步骤','场景','画面','专题','活动','探究','经历','见闻','关键','原则','准绳'];
 
 // 笔名/知名作家白名单（首字不是常见姓也能识别：老舍/冰心/巴金/莫泊桑等）
-const KNOWN_AUTHORS = ['老舍','冰心','巴金','茅盾','鲁迅','曹禺','艾青','舒婷','顾城','海子','三毛','莫言','铁凝','余华','贾平凹','沈从文','徐志摩','戴望舒','张爱玲','金庸','琼瑶','古龙','丁玲','萧红','郁达夫','林语堂','钱钟书','杨绛','张恨水','丰子恺','叶圣陶','汪曾祺','史铁生','冯骥才','梁实秋','周作人','胡适','林清玄','毕淑敏','迟子建','季羡林','秦牧','孙犁','赵树理','柳青','路遥','陈忠实','王小波','阿来','格非','毕飞宇','刘震云','莫泊桑','契诃夫','马克·吐温','马克吐温','安徒生','法布尔','雨果','都德','普希金','泰戈尔','高尔基','屠格涅夫','培根','奥斯特洛夫斯基','茨威格','川端康成','海明威','莎士比亚','托尔斯泰','叶赛宁','济慈','雪莱','普里什文'];
+// v20 扩充：课文/试卷常见作者（含本次真实 PDF 中出现的作者），供流式识别高置信匹配
+const KNOWN_AUTHORS = ['老舍','冰心','巴金','茅盾','鲁迅','曹禺','艾青','舒婷','顾城','海子','三毛','莫言','铁凝','余华','贾平凹','沈从文','徐志摩','戴望舒','张爱玲','金庸','琼瑶','古龙','丁玲','萧红','郁达夫','林语堂','钱钟书','杨绛','张恨水','丰子恺','叶圣陶','汪曾祺','史铁生','冯骥才','梁实秋','周作人','胡适','林清玄','毕淑敏','迟子建','季羡林','秦牧','孙犁','赵树理','柳青','路遥','陈忠实','王小波','阿来','格非','毕飞宇','刘震云','莫泊桑','契诃夫','马克·吐温','马克吐温','安徒生','法布尔','雨果','都德','普希金','泰戈尔','高尔基','屠格涅夫','培根','奥斯特洛夫斯基','茨威格','川端康成','海明威','莎士比亚','托尔斯泰','叶赛宁','济慈','雪莱','普里什文',
+'王勃','司空曙','韩愈','杜甫','朱熹','刘元卿','孟祥夫','施施然','朱干金','朱棣文','常建','梁衡','庄子','孟子','欧阳修','施耐庵','朱自清','闻一多','丁肇中','王选','白岩松','徐霞客','柳宗元','苏轼','陶渊明','范仲淹','刘禹锡','周敦颐','郦道元','吴均','张岱','魏学洢','刘义庆','诸葛亮','曹操','李白','王维','孟浩然','岑参','李商隐','杜牧','白居易','王安石','陆游','辛弃疾','李清照','文天祥','龚自珍','梁启超','竺可桢','茅以升','吴伯箫','贺敬之','端木蕻良','宗璞','李森祥','杨振宁','邓稼先','臧克家','光未然','魏巍','彭荆风','贾平凹','阿西莫夫','利奥波德','严文井','罗素','卡耐基','杰克·伦敦','欧·亨利','欧亨利','马克·吐温','埃德加·斯诺','斯诺'];
 
 // 朝代（多字朝代在前，供作者行「［唐］韩愈」「（宋）苏轼」等识别）
 const DYNASTY_RE_STR = '春秋|战国|西汉|东汉|西晋|东晋|南北朝|北魏|北宋|南宋|晚清|清末|民国|先秦|五代|秦|汉|三国|晋|隋|唐|宋|辽|金|元|明|清|近代|现代|当代';
@@ -562,6 +564,8 @@ const NON_PLACE_NAMES = ['城市','都市','市场','市区','市郊','市内','
 // 人名判断：以常见姓开头且长度 2-4（笔名/知名作家白名单优先通过）
 function isLikelyName(name) {
   if (!name) return false;
+  // v20.2: 必须纯汉字（可含·）——防「和》」「和 m」等带符号串被误判为人名
+  if (!/^[\u4e00-\u9fa5·]+$/.test(name)) return false;
   if (KNOWN_AUTHORS.includes(name)) return true;
   if (name.length < 2 || name.length > 4) return false;
   const compound = ['欧阳','司马','上官','诸葛','东方','独孤','南宫','万俟','闻人','夏侯','呼延','赫连','皇甫','尉迟','公羊','澹台','公冶','宗政','濮阳','淳于','单于','太叔','申屠','公孙','仲孙','轩辕','令狐','钟离','宇文','长孙','慕容','司徒','司空'];
@@ -574,6 +578,10 @@ function isBadName(name) {
   if (!name) return true;
   if (name.length > 4) return true;
   if (/语句|温层|游踪|任务|结尾|开头|修辞|赏析|和谐|之美|经历|见闻|上亿|个名字|说说|方法|借鉴|释义|提示|现象|相矛盾|名字|效果|作用|原因|特点|意义|价值|层次|结构|表现|风格|语言|情感|主旨|观点|态度|形象|意象|意境|线索|脉络|顺序|详略|写法|手法|特色|思路|技巧|策略|规则|格式|标准|要点|注释|示例|范例|步骤|场景|画面|专题|活动|探究|评价|秦时官|代在/.test(name)) return true;
+  // v20: 抽象特征词不可能是人名（「精湛技艺」「文化内涵」等误配）
+  if (/技艺|智慧|境界|情怀|内涵|魅力|风采|精髓|文化|传统|精神|文明|素质|修养|素养|品格|品德|德行|情操|志趣|理想|信念|价值|追求|崇尚|弘扬|传承|发扬|彰显|体现|展现|凸显|折射|蕴含|承载|凝结|汇聚|凝聚|激发|人文|素养|底蕴/.test(name)) return true;
+  // v20: 以单字虚词/连接词结尾（「元在」「予以」等句子碎片，修「柳宗|元在」误配）
+  if (/(之|乎|者|也|矣|焉|哉|兮|欤|耳|在|的|和|与|或|及|并|且|而|于|了|着|过|为)$/.test(name)) return true;
   return false;
 }
 
@@ -716,6 +724,191 @@ function classifyBlockType(hasDynasty, bodyText) {
   return '现代文';
 }
 
+// ===== v20 流式标题-作者识别 =====
+// 背景：真实 PDF 提取文本（pdf.js/pdfplumber）汉字间普遍带空格（「马 说」「王 勃」「骏 马 般 的 豪 迈」），
+// 且双栏排版导致整页无换行（每页 1 个超长"行"），第 9 区块的"按行配对"逻辑完全失效。
+// 方案：先构建"去汉字间空格"的规范文本 norm（保留换行/标点/拼音/数字等），再在 norm 上做流式扫描：
+//   1) 括号型：「马说[唐]韩愈」「观书有感(其一)[宋]朱熹」「倦夜[①]杜甫」
+//   2) 紧邻型：「送杜少府之任蜀州王勃城阙辅三秦…」「有趣的人不苟且孟祥夫…」
+// position 通过 norm→原文 index 映射回射，保证题号归属/批注定位正确。
+
+// 去掉"汉字 空格 汉字"之间的空格，返回 { norm, map }（map[i] = norm 第 i 个字符在原文中的 index）
+function buildNormMap(text) {
+  let norm = '';
+  const map = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (/[\s\u3000]/.test(ch)) {
+      const prev = text[i - 1];
+      const next = text[i + 1];
+      // 空格两侧都是汉字 → 删除（可能是标题/作者/正文的字间空格）
+      if (prev && next && /[\u4e00-\u9fa5]/.test(prev) && /[\u4e00-\u9fa5]/.test(next)) continue;
+      norm += ch; map.push(i);
+    } else {
+      norm += ch; map.push(i);
+    }
+  }
+  return { norm, map };
+}
+
+// 常见姓氏（百家姓前段，用于作者可信度打分；复姓另计）
+const SURNAMES_COMMON = '赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳酆鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯昝管卢莫经房裘缪干解应宗丁宣贲邓郁单杭洪包诸左石崔吉钮龚程嵇邢滑裴陆荣翁荀羊於惠甄曲家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔阴郁胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍却璩桑桂濮牛寿通边扈燕冀郏浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶空曾毋沙乜养鞠须丰巢关蒯相查后荆红游竺权逯盖益桓公';
+
+// 流式候选标题合法性（v20）
+function isValidFlowTitle(title) {
+  if (!title || title.length < 2 || title.length > 16) return false;
+  if (skipTitleCheck(title)) return false;
+  // 标题中段（非开头）含「在/是/了」→ 句子片段（「庄子在濠」「柳宗元在永州」）；「在哈佛毕业典礼上的演讲」例外（开头）
+  if (!title.startsWith('在') && /[在是了]/.test(title)) return false;
+  // 标题不应含符号/数字/字母（v20.2: 用 Unicode 转义显式覆盖全半角标点、中文引号、圈号注释序号；
+  // v20.3: 补 `[` `]` 与换行符——「马说\n[唐]」是跨行碎片，方括号/换行绝不属标题）
+  if (/[，。！？；：、,.;:!?"'"'\u201c\u201d\u2018\u2019《》【】（）()·—…\u2014\u2026①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮※\[\]\n\r\t 0-9a-zA-Z]/.test(title)) return false;
+  // v20.1: 标题以称号/身份词结尾 → 「称号+人名」结构（「北宋文学家欧阳修」），非「标题+作者」
+  if (/(文学家|诗人|作家|学者|史学家|地理学家|政治家|军事家|思想家|教育家|科学家|医学家|数学家|物理学家|化学家|生物学家|天文学家|书法家|画家|艺术家|音乐家|评论家|名家|大师|专家|先生|女士|皇帝|太宗|太祖|高祖|世宗|宰相|丞相|大夫|公子|公主|太子|皇上|陛下|大臣|将军|状元|进士)$/.test(title)) return false;
+  // v20.2: 标题以单字虚词/连接词结尾 → 正文片段（「王选的抉择与」「使地球的平均气温上升了」）
+  if (/(之|乎|者|也|矣|焉|哉|兮|欤|耳|在|的|和|与|或|及|并|而|于|了|着|过|为|是|就|都|也|又|还|再|所|以|把|被|给|让|向|从|对|同|往|将|应|该|能|会|可)$/.test(title)) return false;
+  // v20.2: 正文连接词开头 → 非标题（「不妨学学苏轼」「正如古人所说」）
+  if (/^(不妨|可以|应该|应当|需要|必须|让我们|正如|比如|例如|同时|此外|还有|接着|然后|最后|首先|其次|再次|无论|不管|即使|虽然|但是|然而|因为|所以|如果|那么|只要|只有|尽管|况且|何况|再者|或许|也许|大概|可能|不仅|不但|而且|而是|就是|便是|乃是|譬如|换言之|也就是说|总而言之|由此可见|由此可知)/.test(title)) return false;
+  return true;
+}
+
+// 流式候选打分：作者越可信、标题越长分越高（用于同位置多候选择优）
+function flowScore(title, author, tLen) {
+  let s = 0;
+  if (KNOWN_AUTHORS.includes(author)) s += 30;
+  else if (/^(欧阳|司马|上官|诸葛|东方|独孤|南宫|万俟|闻人|夏侯|呼延|赫连|皇甫|尉迟|公羊|澹台|公冶|宗政|濮阳|淳于|单于|太叔|申屠|公孙|仲孙|轩辕|令狐|钟离|宇文|长孙|慕容|司徒|司空)/.test(author)) s += 15;
+  else if (SURNAMES_COMMON.includes(author[0])) s += 20;
+  else s += 5;
+  s += (author.length === 3 ? 5 : author.length === 4 ? 4 : 0);
+  s += tLen * 0.5;
+  return s;
+}
+
+// v20.1: 作者候选可能吞入正文首字（「刘元卿齐奄」应截为「刘元卿」、「韩愈的」应截为「韩愈」），
+// 从长到短截断：白名单优先，其次常见姓名形态。返回 { name, len } 或 null。
+function resolveAuthorLen(raw) {
+  if (!raw) return null;
+  const maxL = Math.min(raw.length, 4);
+  // 白名单优先（「刘元卿齐奄」→「刘元卿」；「韩愈的」→「韩愈」）
+  for (let L = maxL; L >= 2; L--) {
+    const cand = raw.slice(0, L);
+    if (KNOWN_AUTHORS.includes(cand)) return { name: cand, len: L };
+  }
+  for (let L = maxL; L >= 2; L--) {
+    const cand = raw.slice(0, L);
+    if (isLikelyName(cand) && !isBadName(cand)) return { name: cand, len: L };
+  }
+  return null;
+}
+
+// 流式收集标题-作者之后的正文（从 endIdx 到下一块/题号/指令/上限）
+function collectStreamBody(norm, fromIdx, blocks, maxLen) {
+  let body = '';
+  for (let i = fromIdx; i < norm.length && body.length < maxLen; i++) {
+    if (blocks.some(b => b.startIdx === i)) break; // 下一标题块开始
+    const ch = norm[i];
+    if (/[\u4e00-\u9fa5，。！？；：、…·]/.test(ch)) { body += ch; continue; }
+    if (/[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]/.test(ch)) continue; // 脚注/注释序号
+    if (/[a-zA-Z0-9%]/.test(ch)) continue; // 拼音/数字
+    if (/[「」"'《》]/.test(ch)) continue; // 引号书名号继续
+    if (/^[\u4e00-\u9fa5]{2,4}[，。；]/.test(norm.slice(i))) { /* 正常正文，继续 */ }
+    break;
+  }
+  return body.trim();
+}
+
+// 流式标题-作者识别主函数（在 norm 上运行，返回块列表，按 startIdx 升序、互不重叠）
+function findTitleAuthorBlocks(norm) {
+  const blocks = [];
+  // 1) 括号型：「马说[唐]韩愈」「观书有感(其一)[宋]朱熹」「倦夜[①]杜甫」
+  const bracketRe = /([\u4e00-\u9fa5·]{2,16}(?:[（(][^）)]{0,8}[）)])?)[\[【［(（]([^\]】］)）]{1,6})[\]】］)）]\s*([\u4e00-\u9fa5·]{2,5})/g;
+  let m;
+  const bracketCheck = new RegExp('^(' + DYNASTY_RE_STR + ')$');
+  while ((m = bracketRe.exec(norm)) !== null) {
+    const title = m[1];
+    const bracket = m[2];
+    const authorRaw = m[3];
+    if (!title) continue;
+    // 括号内容须为朝代或注释序号（排除「原文」「译文」等）
+    if (!bracketCheck.test(bracket) && !/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮*※]{1,2}$/.test(bracket)) continue;
+    if (!isValidFlowTitle(title)) continue;
+    // v20.1: 作者可能被贪婪吞入正文首字（「刘元卿齐奄」→「刘元卿」），按白名单/姓名形态截断
+    const author = resolveAuthorLen(authorRaw);
+    if (!author) continue;
+    const startIdx = m.index;
+    const prevCh = norm[startIdx - 1] || '';
+    if (/[\u4e00-\u9fa5]/.test(prevCh)) continue; // 标题前是汉字 → 非独立标题
+    // endIdx 需按截断后的作者长度回退（吞入的正文首字不占块区间）
+    const endIdx = m.index + m[0].length - (authorRaw.length - author.len);
+    blocks.push({ title, author: author.name, strong: true, startIdx, endIdx, score: 1000 });
+  }
+  // 1b) 圈号序号型：「倦夜①杜甫竹凉侵卧内…」「观书有感(其一)②朱熹」——标题后跟注释序号再跟作者
+  // v20.2: 作者必须白名单——「走进大明川施施然①谷雨时节」中「①」是作者「施施然」的注释序号，
+  //        若 author 组（谷雨时节）非白名单则拒绝，避免把「标题+作者」整体误当标题
+  const markerRe = /([\u4e00-\u9fa5·]{2,16})\s*([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮])\s*([\u4e00-\u9fa5·]{2,5})/g;
+  while ((m = markerRe.exec(norm)) !== null) {
+    const title = m[1];
+    const authorRaw = m[3];
+    if (!isValidFlowTitle(title)) continue;
+    const author = resolveAuthorLen(authorRaw);
+    if (!author) continue;
+    if (!KNOWN_AUTHORS.includes(author.name)) continue; // 强证据形态也要求白名单作者
+    if (author.name === title) continue;
+    const startIdx = m.index;
+    const prevCh = norm[startIdx - 1] || '';
+    if (/[\u4e00-\u9fa5]/.test(prevCh)) continue; // 标题前是汉字 → 非独立标题（「满庭隅。倦夜①」的「倦」前是句读则 OK）
+    const endIdx = m.index + m[0].length - (authorRaw.length - author.len);
+    // 与括号型块去重（同一标题两种形态）
+    if (blocks.some(b => b.title === title)) continue;
+    blocks.push({ title, author: author.name, strong: true, startIdx, endIdx, score: 1000 });
+  }
+  // 2) 紧邻型：「送杜少府之任蜀州王勃城阙辅三秦…」「有趣的人不苟且孟祥夫…」
+  //    v20.2 收紧规则（在 v20.1 基础上）：
+  //    a) 作者必须命中 KNOWN_AUTHORS 白名单——双栏拼接文本中「正文句首词+姓」碎片（养性/后禅院/谷雨时节/强大/
+  //       任选一个/温上升了…）全部不在白名单，白名单过滤是消灭碎片最有效的单一条目；目标作者（王勃/司空曙/
+  //       韩愈/刘元卿/孟祥夫/施施然/朱干金/朱棣文/常建/欧阳修/法布尔/朱自清/施耐庵…）全部在白名单
+  //    b) 标题 >= 4 字（2-3 字标题必有括号型/书名号排版，如「马说[唐]韩愈」；修「柳宗」等碎片标题）
+  //    c) 非白名单作者后必须紧跟句读/空格/行尾（白名单作者后接正文汉字是正常排版，放行）
+  //    候选起点 = 前一字符非汉字、当前字符是汉字（标题首字）
+  for (let i = 0; i < norm.length; i++) {
+    if (!/[\u4e00-\u9fa5]/.test(norm[i])) continue;
+    const prev = i > 0 ? norm[i - 1] : '';
+    if (/[\u4e00-\u9fa5]/.test(prev)) continue;
+    let best = null;
+    for (let tLen = 4; tLen <= 16; tLen++) {
+      const title = norm.substr(i, tLen);
+      if (!isValidFlowTitle(title)) continue;
+      for (let aLen = 4; aLen >= 2; aLen--) {
+        const authorRaw = norm.substr(i + tLen, aLen);
+        if (!authorRaw || authorRaw.length < 2) continue;
+        const author = resolveAuthorLen(authorRaw);
+        if (!author) continue;
+        if (!KNOWN_AUTHORS.includes(author.name)) continue; // v20.2: 紧邻型作者必须白名单
+        if (author.name === title) continue;
+        // 标题不能已包含该作者（「…司空曙」当标题的错误场景）
+        if (title.includes(author.name)) continue;
+        const afterIdx = i + tLen + author.len;
+        const afterCh = norm[afterIdx] || '';
+        const afterOk = !afterCh || !/[\u4e00-\u9fa5]/.test(afterCh) || KNOWN_AUTHORS.includes(author.name);
+        if (!afterOk) continue;
+        const sc = flowScore(title, author.name, tLen);
+        if (!best || sc > best.score) best = { title, author: author.name, score: sc, tLen, endIdx: afterIdx };
+      }
+    }
+    if (best) {
+      blocks.push({ title: best.title, author: best.author, strong: false, startIdx: i, endIdx: best.endIdx, score: best.score });
+    }
+  }
+  // 去重叠：按分数降序贪心，重叠区间保留高分
+  blocks.sort((a, b) => b.score - a.score);
+  const used = [];
+  for (const b of blocks) {
+    if (used.some(u => (b.startIdx >= u.startIdx && b.startIdx < u.endIdx) || (u.startIdx >= b.startIdx && u.startIdx < b.endIdx))) continue;
+    used.push(b);
+  }
+  return used.sort((a, b) => a.startIdx - b.startIdx);
+}
+
 function identifyItems(pages) {
   const items = [];
   let id = 0;
@@ -727,6 +920,9 @@ function identifyItems(pages) {
     const pageLabel = `P${pageNum}`;
     const pageLabels = extractQuestionLabels(text);
     pageLabelMap.set(pageNum, pageLabels);
+
+    // v20: 真实 PDF 提取文本汉字间普遍带空格（「马 说」「王 勃」）且无换行，构建去空格规范文本 + 原文 index 映射
+    const { norm, map } = buildNormMap(text);
 
     // 1. 作者+标题: "朱绛《春女怨》"
     const authorTitleRe = /([\u4e00-\u9fa5·]{2,6})[^\u4e00-\u9fa5《]{0,3}《([^》]{2,20})》/g;
@@ -742,7 +938,16 @@ function identifyItems(pages) {
       // 排除非作者词（动词短语、常用词、描述性词语）
       const notAuthor = ['课文','选自','出自','摘自','原文','阅读','以下','文章','这篇','根据','关于','参见','参考','来源','出处','载于','节选','有的','一次','编辑','写作','收进','更能','体会','忙之','深沉','期盼','源头','最终','著成','并撰文','教学','相长','就拿','再比如','就拿','更如','又如','正如','好比','就像','如同','例如','诸如','即如','便如','乃是','便是','就是','均为','皆为','系为','属为','称为','叫做','名为','题为','名为','书名','篇名','文名','诗名','题名','载于','刊于','发表于','选编','编选','收录','辑录','摘录','节录','转录','迻译'];
       if (notAuthor.includes(author)) continue;
+      // v20: 作者名可能带「的/等」连接（「法布尔的小语《昆虫记》」→ 提取「法布尔」）
+      if (author.includes('的') || author.includes('等')) {
+        const parts = author.split(/[的等]/);
+        const valid = parts.find(p => p.length >= 2 && p.length <= 4 && isLikelyName(p) && !isBadName(p));
+        if (!valid) continue;
+        author = valid;
+      }
       if (isBadName(author)) continue;
+      // v20: 作者必须是姓名形态（修「精湛技艺《桃花源记》」「不同《水浒传》」等误配）
+      if (!isLikelyName(author)) continue;
       // 作者里不能包含明显非人名用字（如动词/量词/形容词）
       if (/[一次编辑套写收进忙能体会的这在是为以可与而之于深沉期盼最终源头教学相长拿比如更又正便即乃均皆系属称叫做名题书篇文诗刊发收辑摘录节转迻]/.test(author)) continue;
       // 找附近引号内的诗句
@@ -764,7 +969,8 @@ function identifyItems(pages) {
     const titleOnlyRe = /《([^》]{2,20})》/g;
     while ((m = titleOnlyRe.exec(text)) !== null) {
       const rawTitle = m[1];
-      const title = rawTitle.replace(/[∙·•‧]/g, '');
+      // v20: 书名号内可能带字间空格（「《马 说》」→「马说」）
+      const title = rawTitle.replace(/[\s∙·•‧]/g, '');
       // 排除已被作者+标题覆盖的
       const covered = items.some(it => it.title === title);
       if (covered) continue;
@@ -978,6 +1184,32 @@ function identifyItems(pages) {
         return out;
       })();
 
+      // ===== v20 流式识别（处理无换行/汉字间带空格文本，兼容真实 PDF 提取格式）=====
+      const flowBlocks = findTitleAuthorBlocks(norm);
+      // v20.1: 与第 1 区块（书名号标题，如「法布尔《昆虫记》」）去重
+      const flowSeen = new Set(items.filter(it => it.title).map(it => it.title));
+      const flowPushed = new Set(); // 流式实际 push 的标题（供行级配对去重）
+      for (const b of flowBlocks) {
+        if (flowSeen.has(b.title)) continue; // 已被书名号形态识别
+        const bodyText = collectStreamBody(norm, b.endIdx, flowBlocks, 80);
+        const type = classifyBlockType(b.strong, bodyText);
+        flowSeen.add(b.title);
+        flowPushed.add(b.title);
+        id++;
+        items.push({
+          id, page: pageLabel, type,
+          content: `${b.author}《${b.title}》${bodyText ? '："' + bodyText.substring(0, 60) + '"' : ''}`,
+          author: b.author, title: b.title,
+          quoteText: bodyText.substring(0, 80),
+          context: text.substring(Math.max(0, map[b.startIdx] - 20), Math.min(text.length, map[b.endIdx] + 60)),
+          position: map[b.startIdx],
+          pageNum,
+        });
+      }
+
+      // v20: 行级配对仅在文本存在换行结构时有效（真实 PDF 提取文本无换行 → 跳过，避免整页误配对）
+      const useLineLogic = lines.length > 1;
+
       // 收集标题候选与作者候选（带行号）
       const titleHits = [];
       const authorHits = [];
@@ -1029,8 +1261,10 @@ function identifyItems(pages) {
 
       const usedTitles = new Set();
       const usedAuthors = new Set();
-      const blockSeenTitles = new Set();
+      // v20.2: 流式已识别的标题（如「马说[唐]韩愈」）也登记进 blockSeenTitles，行级配对跳过，防有换行文本重复识别
+      const blockSeenTitles = new Set(flowPushed);
       for (const p of pairs) {
+        if (!useLineLogic) break; // v20: 无换行文本不执行行级配对
         if (usedTitles.has(p.th.idx) || usedAuthors.has(p.ah.idx)) continue;
         if (blockSeenTitles.has(p.th.title.title)) continue;
         usedTitles.add(p.th.idx);
@@ -1090,6 +1324,11 @@ function identifyItems(pages) {
     // ===== 12. 行政区划地名 =====
     while ((m = PLACE_RE.exec(text)) !== null) {
       const name = m[0];
+      // v20.2: PLACE_RE 贪婪吞入出处动词前缀（「摘编自广东省」整体被匹配）→ 归出处标注识别
+      if (/^(选自|摘编自|摘自|引自|节选自|出自|来自|源于|载于|来源于|有删改|原载)/.test(name)) continue;
+      // v20: 排除出处标注前缀（「摘编自广东省肿瘤康复学会科普平台…」→ 归出处标注识别）
+      const beforePlace = text.substring(Math.max(0, m.index - 8), m.index);
+      if (/(选自|原载|出处|摘自|引自|来源|载于|节选自|摘编自|有删改)/.test(beforePlace)) continue;
       // 排除常见非地名（城市/市场/全市 等）与碎片（含"的"如「水泥的城市」）
       if (NON_PLACE_NAMES.includes(name)) continue;
       if (name.includes('的')) continue;
@@ -1639,7 +1878,7 @@ app.post('/api/check', async (req, res) => {
 });
 
 // ===== 导出（供本地测试/模块化使用）=====
-module.exports = { identifyItems, extractTitleFromLine, extractAuthorFromLine, isLikelyName };
+module.exports = { identifyItems, extractTitleFromLine, extractAuthorFromLine, isLikelyName, buildNormMap, findTitleAuthorBlocks, collectStreamBody };
 
 // ===== 启动 =====
 if (require.main === module) {
