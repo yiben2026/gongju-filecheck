@@ -581,7 +581,8 @@ function skipTitleCheck(title) {
 // 从一行文本提取标题候选（返回 { title, src } 或 null；src: whole整行/head行首/tail行尾）
 // 支持三种形态：整行标题「送杜少府之任蜀州」/「马 说」；行首标题+邻栏内容「烟雨龙虎山 醇厚留在唇齿之间。」；行尾标题「! 有趣的人不苟且」；带(其一)后缀
 function extractTitleFromLine(lineText) {
-  const s = lineText;
+  // 先去掉常见的甲乙丙丁分组标签前缀（如【甲】马说、(乙) 猫号）
+  const s = lineText.replace(/^[【】][甲乙丙丁戊己庚辛壬癸][【】]\s*/, '').replace(/^[(（][甲乙丙丁戊己庚辛壬癸][)）]\s*/, '');
   const whole = s.replace(/\s/g, '');
   // 1) 整行去空格后为纯汉字（可含·），2-12字
   if (/^[\u4e00-\u9fa5·]{2,12}$/.test(whole)) {
@@ -626,8 +627,8 @@ function extractTitleFromLine(lineText) {
 function extractAuthorFromLine(lineText) {
   const t = lineText;
   const whole = t.replace(/\s/g, '');
-  // 1) [唐]韩愈 等朝代格式
-  let m = t.match(/[\[【]\s*([唐末宋元明清近现代当代])\s*[\]】]\s*([\u4e00-\u9fa5·]{2,4})/);
+  // 1) [唐]韩愈 / ［唐］韩愈 / 【唐】韩愈 等朝代格式（支持全角方头括号）
+  let m = t.match(/[\[【［]\s*([唐末宋元明清近现代当代])\s*[\]】］]\s*([\u4e00-\u9fa5·]{2,4})/);
   if (m && isLikelyName(m[2]) && !isBadName(m[2])) return m[2];
   // 2) 整行 2-4 字人名（如「王 勃」「施施然」）
   if (/^[\u4e00-\u9fa5·]{2,4}$/.test(whole) && isLikelyName(whole) && !isBadName(whole)) return whole;
@@ -742,6 +743,13 @@ function identifyItems(pages) {
       // 排除常见非核查标题
       const skipTitles = ['语文','数学','英语','物理','化学','历史','地理','政治','生物','试卷','试题','答案','解析','练习','作业','课本','教材','选文','例文','范文','丛书','丛刊'];
       if (skipTitles.includes(title)) continue;
+      // 排除明显是工具书/教材/杂志/报刊/典籍丛书的书名（这些应归出处标注识别）
+      const bookOnlyTitles = ['唐诗鉴赏辞典','宋词鉴赏辞典','元曲鉴赏辞典','纽约客','生物学','人教版','部编版','苏教版','语文版','沪教版','粤教版','鲁教版','浙教版','外研版','译林版','新概念英语','人民日报','光明日报','新华日报','中国青年报','中国教育报','人民教育','读者','青年文摘','意林','故事会','科幻世界','博物','环球科学','科学美国人','自然','细胞','柳叶刀','新英格兰医学杂志','美国国家地理','国家地理','三联生活周刊','南方周末','澎湃新闻','新华社','新华网','人民网','光明网','中国新闻网','央视网','中国日报','环球时报','求是','半月谈','瞭望','咬文嚼字','辞海','汉语大词典','现代汉语词典','古代汉语词典','牛津高阶英汉双解词典','成语大词典','百科全书','大百科全书','菌生百态','医学编年史专栏'];
+      // 也排除以“辞典/词典/字典/大全/百科/年鉴/年选/选刊/丛刊/学报/杂志/期刊/周刊/月刊/季刊/年刊/年报/日报/晚报/晨报/商报/时报/邮报/信报/快报/导报/早报/都市报/青年报/少年报/教育报/科学报/医学报/健康报/法制报/公安报/农民报/工人报/妇女报/老年报/书画报/摄影报/邮报/时报/商报”结尾的书名，或书名中包含黑名单关键词
+      if (bookOnlyTitles.some(w => title.includes(w)) || /(辞典|词典|字典|辞书|大全|百科|年鉴|年选|选刊|丛刊|学报|杂志|期刊|周刊|月刊|季刊|年刊|年报|日报|晚报|晨报|商报|时报|邮报|信报|快报|导报|早报|都市报|青年报|少年报|教育报|科学报|医学报|健康报|法制报|公安报|农民报|工人报|妇女报|老年报|书画报|摄影报)$/.test(title)) continue;
+      // 如果该书名号紧跟在“选自/摘自/节选自/摘编自...”之后，让出处标注步骤识别，避免重复/误分类
+      const beforeBook = text.substring(Math.max(0, m.index - 25), m.index);
+      if (/(选自|原载|出处|摘自|引自|来源|载于|节选自|摘编自|有删改)[：:]?\s*$/.test(beforeBook)) continue;
       // 排除乱码/非中文标题：标题中文字占比不足50%的跳过
       const chineseChars = (title.match(/[\u4e00-\u9fa5]/g) || []).length;
       if (chineseChars < title.length * 0.5) continue;
@@ -780,8 +788,8 @@ function identifyItems(pages) {
           if (/[!@#$%^&*+=<>?/\\|~`]/.test(bookContent)) continue;
         }
       }
-      // 避免与作者+标题重复
-      const existSimilar = items.some(it => it.context.includes(m[0]));
+      // 避免与作者+标题重复（不依赖过宽的 context，防止书名号标题的 context 窗口吞掉同段出处标注）
+      const existSimilar = items.some(it => it.content === m[0] || (it.citationText && it.citationText === citeBody));
       if (existSimilar) continue;
       id++;
       items.push({
@@ -946,7 +954,7 @@ function identifyItems(pages) {
         const author = extractAuthorFromLine(lines[li].t);
         if (author) authorHits.push({
           name: author, idx: li,
-          strong: /[\[【][唐宋元明清近现代当代][\]】]/.test(lines[li].t),
+          strong: /[\[【［][唐宋元明清近现代当代][\]】］]/.test(lines[li].t),
           creation: /(创作|写下|著有|写过|写作|作诗|写道)/.test(lines[li].t),
         });
       }
