@@ -239,6 +239,16 @@
     <div class="action-bar">
       <button class="btn btn-primary" id="checkBtn" disabled>开始核查</button>
       <button class="btn btn-outline" id="resetBtn">重置</button>
+      <button class="btn btn-outline" id="debugTextBtn" disabled>查看提取文本</button>
+    </div>
+
+    <!-- 调试：提取文本展示 -->
+    <div class="panel" id="debugTextPanel" style="display:none;">
+      <div class="panel-title">
+        <span>提取文本（调试用）</span>
+        <button class="btn btn-outline" id="closeDebugTextBtn" style="padding:4px 12px; font-size:12px;">关闭</button>
+      </div>
+      <div id="debugTextContent" style="max-height:400px; overflow:auto; background:#f8f8f8; border:1px solid #eee; border-radius:8px; padding:12px; font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-all; font-family:monospace;"></div>
     </div>
 
     <!-- 进度面板 -->
@@ -374,6 +384,7 @@
     $('pdfUploadCard').classList.add('has-file');
     $('checkBtn').disabled = false;
     $('checkBtn').classList.add('ready');
+    $('debugTextBtn').disabled = false;
   });
 
   // 拖拽
@@ -414,6 +425,7 @@
       setProgress(22, '22%');
       log('正在发送文本到核查服务...', 'info');
       log('服务端正在识别可核查内容并联网搜索...', 'info');
+      console.log('=== 发送到 /api/check 的 pages ===', pages);
 
       const response = await fetch(SERVER_URL + '/api/check', {
         method: 'POST',
@@ -809,6 +821,49 @@
     }
   });
 
+  // ===== 查看提取文本（调试） =====
+  let lastExtractedPages = null;
+  $('debugTextBtn').addEventListener('click', async () => {
+    if (!selectedFile) return;
+    const btn = $('debugTextBtn');
+    btn.textContent = '提取中...';
+    btn.disabled = true;
+    try {
+      const pages = await extractTextFromFile(selectedFile);
+      lastExtractedPages = pages;
+      const display = pages.map((p, i) => {
+        return `===== 第 ${i + 1} 段 (pageNum: ${p.pageNum}) =====\n${p.text}`;
+      }).join('\n\n');
+      $('debugTextContent').textContent = display;
+      $('debugTextPanel').style.display = 'block';
+      $('debugTextPanel').classList.add('show');
+      // 同时发到调试接口看识别结果
+      try {
+        const resp = await fetch(SERVER_URL + '/api/debug/identify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pages }),
+        });
+        const debugResult = await resp.json();
+        const itemsInfo = debugResult.items.map(it => `  [${it.type}] ${it.content}`).join('\n');
+        $('debugTextContent').textContent += `\n\n===== 识别结果（${debugResult.count} 项）=====\n${itemsInfo}\n\n（以上文本和识别结果已同时输出到浏览器控制台，可按 F12 查看）`;
+        console.log('=== 提取文本（调试） ===');
+        console.log('pages:', pages);
+        console.log('识别结果:', debugResult);
+      } catch (e) {
+        $('debugTextContent').textContent += `\n\n（调试接口请求失败: ${e.message}）`;
+      }
+    } catch (e) {
+      $('debugTextContent').textContent = '提取失败: ' + e.message;
+      $('debugTextPanel').style.display = 'block';
+    }
+    btn.textContent = '查看提取文本';
+    btn.disabled = false;
+  });
+  $('closeDebugTextBtn').addEventListener('click', () => {
+    $('debugTextPanel').style.display = 'none';
+  });
+
   // ===== 重置 =====
   $('resetBtn').addEventListener('click', () => {
     selectedFile = null;
@@ -819,6 +874,8 @@
     $('pdfUploadCard').classList.remove('has-file');
     $('checkBtn').disabled = true;
     $('checkBtn').classList.remove('ready');
+    $('debugTextBtn').disabled = true;
+    $('debugTextPanel').style.display = 'none';
     $('annotateBtn').disabled = true;
     $('progressPanel').classList.remove('show');
     $('resultPanel').classList.remove('show');
