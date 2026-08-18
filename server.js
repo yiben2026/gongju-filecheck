@@ -108,49 +108,25 @@ async function getValidSources(results, item, max = 3) {
   if (item.nameText) tokens.push(normalizeText(item.nameText));
   if (item.content) tokens.push(normalizeText(item.content).substring(0, 10));
 
-  // v21: 剔除已知垃圾源，权威站结果优先验证
-  const cleanResults = results.filter(r => !isJunkSite(r.url));
-  const sorted = sortByPriority(cleanResults, item.type);
-  const sortedAuth = sorted.filter(r => isAuthoritativeUrl(r.url, item.type));
-  const sortedOther = sorted.filter(r => !isAuthoritativeUrl(r.url, item.type));
+  // v22: 只返回权威站来源；百度经验/知乎/知道/文库/娱乐/电商等低质量来源不再作为依据展示
+  const cleanAuth = results.filter(r => !isJunkSite(r.url) && isAuthoritativeUrl(r.url, item.type));
+  const sorted = sortByPriority(cleanAuth, item.type);
   const valid = [];
-  for (const r of [...sortedAuth, ...sortedOther]) {
+  for (const r of sorted) {
     if (valid.length >= max) break;
     const v = await validateSource(r, tokens);
     if (v) valid.push(v);
   }
 
-  // 兜底1：验证都失败时，优先返回权威站相关结果；无权威站时返回普通相关结果
-  if (valid.length === 0 && cleanResults.length > 0) {
-    const related = cleanResults.filter(r => {
-      if (isLowQualityTitle(r.title)) return false;
-      const nt = normalizeText((r.title || '') + ' ' + (r.snippet || ''));
-      return tokens.some(t => t && t.length >= 2 && nt.includes(t));
-    }).sort((a, b) => (isAuthoritativeUrl(b.url, item.type) ? 1 : 0) - (isAuthoritativeUrl(a.url, item.type) ? 1 : 0)).slice(0, max);
-    if (related.length > 0) {
-      return related.map(r => ({
-        title: (r.title || '相关搜索结果').replace(/[\s\n]+/g, ' ').trim(),
-        url: r.url,
-        snippet: r.snippet || '',
-        verified: false,
-      }));
-    }
-  }
-
-  // 兜底2：权威站结果不足时，仅补充非垃圾站的原始结果（排除搜索页/PDF）
-  if (valid.length === 0 && cleanResults.length > 0) {
-    const topResults = cleanResults.filter(r => {
-      const url = r.url || '';
-      return /^https?:\/\//.test(url) && !/search\?|s\?|so\?|query=|\.pdf$/i.test(url) && !isLowQualityTitle(r.title);
-    }).slice(0, 2);
-    if (topResults.length > 0) {
-      return topResults.map(r => ({
-        title: (r.title || '相关搜索结果').replace(/[\s\n]+/g, ' ').trim(),
-        url: r.url,
-        snippet: r.snippet || '',
-        verified: false,
-      }));
-    }
+  // 权威站页面验证均失败时，仍返回排序后的权威站原始结果（带未验证标记），
+  // 坚决不向用户展示普通/低质量来源
+  if (valid.length === 0 && cleanAuth.length > 0) {
+    return cleanAuth.slice(0, max).map(r => ({
+      title: (r.title || '相关搜索结果').replace(/[\s\n]+/g, ' ').trim(),
+      url: r.url,
+      snippet: r.snippet || '',
+      verified: false,
+    }));
   }
 
   return valid;
@@ -188,7 +164,7 @@ function isAuthoritativeUrl(url, type = '') {
 // 已知低相关来源（广告/电商/娱乐/问答聚合等）：不参与「内容无误」判定
 function isJunkSite(url) {
   const u = url || '';
-  return /taobao|tmall|pinduoduo|jd\.com|suning|gome|zhidao\.baidu|wenku\.baidu|baijiahao|mail\.qq|music\.|yinyue|geci|lyrics|kugou|kuwo|qq音乐|iqiyi|youku|bilibili|douyin|kuaishou|qidian|zongheng|17k|ximalaya|qingting|zhihu\.com\/question|sohu\.com\/a|163\.com\/dynamic/.test(u);
+  return /taobao|tmall|pinduoduo|jd\.com|suning|gome|zhidao\.baidu|wenku\.baidu|jingyan\.baidu|baijiahao|mail\.qq|music\.|yinyue|geci|lyrics|kugou|kuwo|qq音乐|iqiyi|youku|bilibili|douyin|kuaishou|qidian|zongheng|17k|ximalaya|qingting|zhihu\.com|sohu\.com\/a|163\.com\/dynamic/.test(u);
 }
 
 // 从整页文本提取所有题号标签（带位置）
@@ -1759,6 +1735,13 @@ async function verifyItem(item) {
       if (validDate && reasonable) {
         result.verdict = '内容无误';
         result.notes = `日期"${item.content}"格式合法且为真实存在的日期`;
+        // v22: 给日期本地校验一个可展示的依据（避免依据列空白）
+        result.sources = [{
+          title: '日期合法性校验',
+          url: 'javascript:;',
+          snippet: `"${item.content}"为真实存在的公历日期（${y}年${m}月${d}日）`,
+          verified: true
+        }];
         // 若上下文含具体事件（如会议/讲话/活动），补一次权威搜索交叉验证
         const ctxRaw = (item.context || '').replace(item.content, '').replace(/[^\u4e00-\u9fa5]/g, '').substring(0, 12);
         if (ctxRaw && ctxRaw.length >= 4 && /(举行|召开|举办|讲话|发表|发布|提出|签署|纪念|成立|开幕|闭幕|通过|审议)/.test(ctxRaw)) {
@@ -1773,12 +1756,19 @@ async function verifyItem(item) {
             result.sources = await getValidSources(results, item);
           } else if (authResults.length > 0) {
             result.notes = `日期"${item.content}"真实存在；事件"${ctxRaw}"未在权威来源完全确认，建议抽查`;
+            result.sources = await getValidSources(results, item);
           }
         }
       } else {
         result.verdict = '存在错误';
         result.notes = `日期"${item.content}"不存在或超出合理范围（年月日组合无效）`;
         result.suggestion = `请核对"${item.content}"的年份/月份/日期`;
+        result.sources = [{
+          title: '日期合法性校验',
+          url: 'javascript:;',
+          snippet: `"${item.content}"的公历日期组合无效（${y}年${m}月${d}日不存在）`,
+          verified: true
+        }];
       }
 
     } else if (item.type === '领导人讲话') {
