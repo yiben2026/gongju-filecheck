@@ -543,6 +543,12 @@ const TITLE_SKIP = ['考点','部分','语文','数学','英语','物理','化�
 // 标题候选按行提取时的额外排除（词尾出现即拒绝）
 const TITLE_SKIP_TAIL = ['效果','作用','原因','方法','特点','意义','价值','表现','结构','表达','方式','角度','关系','影响','过程','结果','背景','目的','意图','好处','妙处','内容','标题','开头','结尾','段落','句子','词语','文化','常识','风格','语言','情感','主旨','观点','态度','形象','意象','意境','线索','脉络','层次','顺序','详略','修辞','写法','手法','特色','思路','技巧','策略','规则','格式','标准','要点','提示','注释','示例','范例','任务','文本','材料','小贴士','批注','评价','步骤','场景','画面','专题','活动','探究','经历','见闻','关键','原则','准绳'];
 
+// 笔名/知名作家白名单（首字不是常见姓也能识别：老舍/冰心/巴金/莫泊桑等）
+const KNOWN_AUTHORS = ['老舍','冰心','巴金','茅盾','鲁迅','曹禺','艾青','舒婷','顾城','海子','三毛','莫言','铁凝','余华','贾平凹','沈从文','徐志摩','戴望舒','张爱玲','金庸','琼瑶','古龙','丁玲','萧红','郁达夫','林语堂','钱钟书','杨绛','张恨水','丰子恺','叶圣陶','汪曾祺','史铁生','冯骥才','梁实秋','周作人','胡适','林清玄','毕淑敏','迟子建','季羡林','秦牧','孙犁','赵树理','柳青','路遥','陈忠实','王小波','阿来','格非','毕飞宇','刘震云','莫泊桑','契诃夫','马克·吐温','马克吐温','安徒生','法布尔','雨果','都德','普希金','泰戈尔','高尔基','屠格涅夫','培根','奥斯特洛夫斯基','茨威格','川端康成','海明威','莎士比亚','托尔斯泰','叶赛宁','济慈','雪莱','普里什文'];
+
+// 朝代（多字朝代在前，供作者行「［唐］韩愈」「（宋）苏轼」等识别）
+const DYNASTY_RE_STR = '春秋|战国|西汉|东汉|西晋|东晋|南北朝|北魏|北宋|南宋|晚清|清末|民国|先秦|五代|秦|汉|三国|晋|隋|唐|宋|辽|金|元|明|清|近代|现代|当代';
+
 // 重大会议名称（保守列表：含全称「中国共产党第X届中央委员会第X次全体会议」「中国共产党第X次全国代表大会」与简称）
 const MEETING_RE = /(中国共产党第[一二三四五六七八九十]{1,3}次全国代表大会|中国共产党第[一二三四五六七八九十]{1,3}届中央委员会第[一二三四五六七八九十]{1,3}次全体会议|第[一二三四五六七八九十]{1,3}届中央委员会第[一二三四五六七八九十]{1,3}次全体会议|党的二十大|十九大|二十大|[一二三四五六七八九十]{1,3}届[一二三四五六七八九十]{1,3}中全会|全国两会|全国人民代表大会|中国人民政治协商会议|国务院常务会议|国务院全体会议|中央经济工作会议|中央农村工作会议|全国教育大会|全国宣传思想文化工作会议|全国网络安全和信息化工作会议|博鳌亚洲论坛|二十国集团峰会|世界互联网大会|亚太经合组织领导人非正式会议|金砖国家领导人会晤|全国科技创新大会|两院院士大会|全国劳动模范和先进工作者表彰大会)/g;
 
@@ -553,9 +559,11 @@ const ORG_RE = /(中华人民共和国国务院|中华人民共和国教育部|�
 const PLACE_RE = /([\u4e00-\u9fa5]{2,6}省|[\u4e00-\u9fa5]{1,5}自治区|[\u4e00-\u9fa5]{1,5}直辖市|[\u4e00-\u9fa5]{2,6}特别行政区|[\u4e00-\u9fa5]{1,5}市)(?!场)/g;
 const NON_PLACE_NAMES = ['城市','都市','市场','市区','市郊','市内','市面','市井','市集','市价','市容','市貌','楼市','股市','两市','全市','本市','该市','各市','城市','城','全县','镇乡','市区','城区','夜市','集市','早市','市上','市里'];
 
-// 人名判断：以常见姓开头且长度 2-4
+// 人名判断：以常见姓开头且长度 2-4（笔名/知名作家白名单优先通过）
 function isLikelyName(name) {
-  if (!name || name.length < 2 || name.length > 4) return false;
+  if (!name) return false;
+  if (KNOWN_AUTHORS.includes(name)) return true;
+  if (name.length < 2 || name.length > 4) return false;
   const compound = ['欧阳','司马','上官','诸葛','东方','独孤','南宫','万俟','闻人','夏侯','呼延','赫连','皇甫','尉迟','公羊','澹台','公冶','宗政','濮阳','淳于','单于','太叔','申屠','公孙','仲孙','轩辕','令狐','钟离','宇文','长孙','慕容','司徒','司空'];
   if (compound.some(s => name.startsWith(s))) return true;
   return SURNAMES.includes(name[0]);
@@ -583,12 +591,19 @@ function skipTitleCheck(title) {
 function extractTitleFromLine(lineText) {
   // 先去掉常见的甲乙丙丁分组标签前缀（如【甲】马说、(乙) 猫号）
   const s = lineText.replace(/^[【】][甲乙丙丁戊己庚辛壬癸][【】]\s*/, '').replace(/^[(（][甲乙丙丁戊己庚辛壬癸][)）]\s*/, '');
+  // 0) 书名号标题行「《我的叔叔于勒》」或「《春望》杜甫」（后跟作者名/行尾；排除「《兑命》曰…」引用句式）
+  const m0 = s.match(/^《([^》]{2,20})》/);
+  if (m0) {
+    const rest = s.slice(m0[0].length).replace(/\s/g, '');
+    if (!rest) return { title: m0[1], src: 'whole' };
+    if (/^[\u4e00-\u9fa5·]{2,4}$/.test(rest) && (isLikelyName(rest) || KNOWN_AUTHORS.includes(rest))) return { title: m0[1], src: 'whole' };
+  }
   const whole = s.replace(/\s/g, '');
-  // 1) 整行去空格后为纯汉字（可含·），2-12字
+  // 1) 整行去空格后为纯汉字（可含·），2-12字（词牌「水调歌头·明月几时有」后缀允许最长8字）
   if (/^[\u4e00-\u9fa5·]{2,12}$/.test(whole)) {
     if (whole.includes('·')) {
       const parts = whole.split('·');
-      if (parts.length !== 2 || parts.some(p => p.length < 2 || p.length > 4)) return null;
+      if (parts.length !== 2 || parts.some(p => p.length < 2 || p.length > 8)) return null;
     }
     return { title: whole, src: 'whole' };
   }
@@ -600,7 +615,7 @@ function extractTitleFromLine(lineText) {
     if (suffix && /[（(]/.test(suffix)) title += suffix; // 并入「(其一)」等后缀
     if (title.includes('·')) {
       const parts = title.split('·');
-      if (parts.length !== 2 || parts.some(p => p.length < 2 || p.length > 4)) return null;
+      if (parts.length !== 2 || parts.some(p => p.length < 2 || p.length > 8)) return null;
     }
     return { title, src: 'head' };
   }
@@ -627,9 +642,15 @@ function extractTitleFromLine(lineText) {
 function extractAuthorFromLine(lineText) {
   const t = lineText;
   const whole = t.replace(/\s/g, '');
-  // 1) [唐]韩愈 / ［唐］韩愈 / 【唐】韩愈 等朝代格式（支持全角方头括号）
-  let m = t.match(/[\[【［]\s*([唐末宋元明清近现代当代])\s*[\]】］]\s*([\u4e00-\u9fa5·]{2,4})/);
-  if (m && isLikelyName(m[2]) && !isBadName(m[2])) return m[2];
+  // 1) 朝代格式（多字朝代优先）：［唐］韩愈 / 【唐】韩愈 / （宋）苏轼 / (清) 龚自珍 等
+  let m = t.match(new RegExp('[\\[【［(（]\\s*(' + DYNASTY_RE_STR + ')\\s*[\\]】］)）]\\s*([\\u4e00-\\u9fa5·]{2,4})'));
+  if (m && (isLikelyName(m[2]) || KNOWN_AUTHORS.includes(m[2])) && !isBadName(m[2])) return m[2];
+  // 1b) 国家前缀格式：[法]莫泊桑 / （俄）契诃夫 等（外国译作，可带「著/译」后缀）
+  m = t.match(/[\[【［(（]\s*(法|美|英|俄|德|日|意|西|古希腊|古罗马|苏联|印度|阿拉伯)\s*[\]】］)）]\s*([\u4e00-\u9fa5·]{2,5})(?:\s*[著译编著]|$)/);
+  if (m && (isLikelyName(m[2]) || KNOWN_AUTHORS.includes(m[2])) && !isBadName(m[2])) return m[2];
+  // 1c) 无前缀「作者 著/译」：如「莫泊桑 著」「老舍 著」
+  m = t.match(/^([\u4e00-\u9fa5·]{2,5})\s*[著译编著]$/);
+  if (m && (isLikelyName(m[1]) || KNOWN_AUTHORS.includes(m[1])) && !isBadName(m[1])) return m[1];
   // 2) 整行 2-4 字人名（如「王 勃」「施施然」）
   if (/^[\u4e00-\u9fa5·]{2,4}$/.test(whole) && isLikelyName(whole) && !isBadName(whole)) return whole;
   // 3) 行首 2-4 字人名（后跟空格/标注/数字，如「朱干金 竹筏在桃花洲登岸...」）
@@ -658,6 +679,11 @@ function collectBodyFromLines(lines, fromIdx) {
     if (/^\d+[.、)）]/.test(t) || /^\d+\s/.test(t)) break; // 题号行（含「5 下面这段即席讲话」）
     if (/^[\u4e00-\u9fa5·]{2,12}$/.test(whole) && !/[，。！？；：]/.test(t)) break; // 又是标题行
     if (/^(阅读|请|根据|结合|分析|概括|简述|写出|填空|选择|判断|翻译|赏析|下列|以下|按要求)/.test(t)) break; // 题目指令
+    // 出处标注行「（选自《礼记·学记》）」/分组标签行「【乙】」：已收集到正文则截断（防跨篇混入），否则跳过
+    if (/^[【】][甲乙丙丁戊己庚辛壬癸][【】]$/.test(t) || /^[(（]?(选自|原载|出处|摘自|引自|来源|载于|节选自|摘编自|有删改)/.test(t)) {
+      if (parts.length > 0) break;
+      continue;
+    }
     // 正文特征：含中文标点、长度>=8、至少4个汉字（排除纯符号行）
     if (/[，。！？；：]/.test(t) && whole.length >= 8 && (whole.match(/[\u4e00-\u9fa5·]/g) || []).length >= 4) {
       // 双栏拼接行：取「最后一个空格分隔段」作为左栏正文（如「如今,我 红烛津亭 夜见君,繁弦急管两纷纷。」
@@ -757,9 +783,14 @@ function identifyItems(pages) {
       if (/[!@#$%^&*+=<>?/\\|~`]/.test(title)) continue;
       // 排除纯数字或数字开头的标题
       if (/^\d/.test(title)) continue;
+      // 标题后 160 字符内有引号诗句（含句读/文言虚词）→ 古诗文献，否则按现代文（如外国译作《我的叔叔于勒》）
+      const afterBook = text.substring(m.index + m[0].length, m.index + m[0].length + 160);
+      const bookQuote = afterBook.match(/["""']([^""""'\n]{4,50})["""']/);
+      const bookQuoteText = bookQuote ? bookQuote[1] : '';
+      const poemLikeTitle = bookQuoteText && (/[之乎者也矣焉哉兮]/.test(bookQuoteText) || /[，,]/.test(bookQuoteText) && (bookQuoteText.match(/[\u4e00-\u9fa5]/g) || []).length >= 8);
       id++;
       items.push({
-        id, page: pageLabel, type: '古诗文献',
+        id, page: pageLabel, type: poemLikeTitle ? '古诗文献' : '现代文',
         content: `《${title}》`,
         author: '', title,
         quoteText: '',
@@ -948,14 +979,27 @@ function identifyItems(pages) {
       // 收集标题候选与作者候选（带行号）
       const titleHits = [];
       const authorHits = [];
+      const dynastyBracketRe = new RegExp('[\\[【［(（]\\s*(' + DYNASTY_RE_STR + ')\\s*[\\]】］)）]');
       for (let li = 0; li < lines.length; li++) {
-        const title = extractTitleFromLine(lines[li].t);
-        if (title && !skipTitleCheck(title.title)) titleHits.push({ title, idx: li });
-        const author = extractAuthorFromLine(lines[li].t);
-        if (author) authorHits.push({
+        const lineText = lines[li].t;
+        const title = extractTitleFromLine(lineText);
+        const author = extractAuthorFromLine(lineText);
+        const pureNameLine = /^[\u4e00-\u9fa5·]{2,4}$/.test(lineText.replace(/\s/g, ''));
+        // 消歧：整行纯汉字行（「孟浩然」「江雪」「王 勃」）同时命中标题和作者时看下一行——
+        // 下一行是正文（含句读的长句）→ 本行是作者行；否则（下一行是人名/空）→ 本行是标题行。
+        // 修复「江雪」被当作者配「孟浩然」、「孟浩然」被当标题产生 江雪《孟浩然》 误配对。
+        let asTitle = true, asAuthor = true;
+        if (pureNameLine && title && author) {
+          const nxt = (li + 1 < lines.length) ? lines[li + 1].t : '';
+          const nxtWhole = nxt.replace(/\s/g, '');
+          const nextIsBody = nxt && /[，。！？；：]/.test(nxt) && nxtWhole.length >= 8 && !/^[\u4e00-\u9fa5·]{2,4}$/.test(nxtWhole);
+          if (nextIsBody) { asTitle = false; asAuthor = true; } else { asTitle = true; asAuthor = false; }
+        }
+        if (title && !skipTitleCheck(title.title) && asTitle) titleHits.push({ title, idx: li });
+        if (author && asAuthor) authorHits.push({
           name: author, idx: li,
-          strong: /[\[【［][唐宋元明清近现代当代][\]】］]/.test(lines[li].t),
-          creation: /(创作|写下|著有|写过|写作|作诗|写道)/.test(lines[li].t),
+          strong: dynastyBracketRe.test(lineText),
+          creation: /(创作|写下|著有|写过|写作|作诗|写道)/.test(lineText),
         });
       }
 
@@ -1070,11 +1114,11 @@ function identifyItems(pages) {
   for (const item of items) {
     const key = normalizeText(item.content).substring(0, 20);
     if (seen.has(key)) continue;
-    // 同类型下，如果标题相同，只保留一条；若当前条目带作者而已有条目无作者，则替换（区块识别补充作者）
+    // 标题相同的条目只保留一条（跨类型合并：如 1b 书名号《XX》与区块配对 作者《XX》）；若当前条目带作者而已有条目无作者，则替换（区块识别补充作者）
     if (item.title) {
-      const titleKey = item.type + ':' + normalizeText(item.title);
+      const titleKey = normalizeText(item.title);
       if (seenTitles.has(titleKey)) {
-        const existing = deduped.find(d => d.title && d.type === item.type && normalizeText(d.title) === normalizeText(item.title));
+        const existing = deduped.find(d => d.title && normalizeText(d.title) === normalizeText(item.title));
         if (existing && !existing.author && item.author) {
           const idx = deduped.indexOf(existing);
           deduped[idx] = item;
