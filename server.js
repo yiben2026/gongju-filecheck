@@ -108,21 +108,25 @@ async function getValidSources(results, item, max = 3) {
   if (item.nameText) tokens.push(normalizeText(item.nameText));
   if (item.content) tokens.push(normalizeText(item.content).substring(0, 10));
 
-  const sorted = sortByPriority(results, item.type);
+  // v21: 剔除已知垃圾源，权威站结果优先验证
+  const cleanResults = results.filter(r => !isJunkSite(r.url));
+  const sorted = sortByPriority(cleanResults, item.type);
+  const sortedAuth = sorted.filter(r => isAuthoritativeUrl(r.url, item.type));
+  const sortedOther = sorted.filter(r => !isAuthoritativeUrl(r.url, item.type));
   const valid = [];
-  for (const r of sorted) {
+  for (const r of [...sortedAuth, ...sortedOther]) {
     if (valid.length >= max) break;
     const v = await validateSource(r, tokens);
     if (v) valid.push(v);
   }
 
-  // 兜底1：验证都失败时，只返回看起来相关的原始搜索结果
-  if (valid.length === 0 && results.length > 0) {
-    const related = results.filter(r => {
+  // 兜底1：验证都失败时，优先返回权威站相关结果；无权威站时返回普通相关结果
+  if (valid.length === 0 && cleanResults.length > 0) {
+    const related = cleanResults.filter(r => {
       if (isLowQualityTitle(r.title)) return false;
       const nt = normalizeText((r.title || '') + ' ' + (r.snippet || ''));
       return tokens.some(t => t && t.length >= 2 && nt.includes(t));
-    }).slice(0, max);
+    }).sort((a, b) => (isAuthoritativeUrl(b.url, item.type) ? 1 : 0) - (isAuthoritativeUrl(a.url, item.type) ? 1 : 0)).slice(0, max);
     if (related.length > 0) {
       return related.map(r => ({
         title: (r.title || '相关搜索结果').replace(/[\s\n]+/g, ' ').trim(),
@@ -133,9 +137,9 @@ async function getValidSources(results, item, max = 3) {
     }
   }
 
-  // 兜底2：如果连标题/snippet匹配都没有，返回前2条原始结果（排除低质量）
-  if (valid.length === 0 && results.length > 0) {
-    const topResults = results.filter(r => {
+  // 兜底2：权威站结果不足时，仅补充非垃圾站的原始结果（排除搜索页/PDF）
+  if (valid.length === 0 && cleanResults.length > 0) {
+    const topResults = cleanResults.filter(r => {
       const url = r.url || '';
       return /^https?:\/\//.test(url) && !/search\?|s\?|so\?|query=|\.pdf$/i.test(url) && !isLowQualityTitle(r.title);
     }).slice(0, 2);
@@ -171,6 +175,20 @@ function sortByPriority(results, contentType = '') {
     if (bp === -1) return -1;
     return ap - bp;
   });
+}
+
+// ===== v21: 权威站判定与垃圾源过滤 =====
+// 「内容无误」必须由权威站点结果背书，杜绝淘宝/QQ邮箱/小说/音乐/知道等垃圾来源造成的误判
+function isAuthoritativeUrl(url, type = '') {
+  const u = url || '';
+  const typeSites = CONTENT_TYPE_SITES[type] || [];
+  return PRIORITY_SITES.some(s => u.includes(s)) || typeSites.some(s => u.includes(s));
+}
+
+// 已知低相关来源（广告/电商/娱乐/问答聚合等）：不参与「内容无误」判定
+function isJunkSite(url) {
+  const u = url || '';
+  return /taobao|tmall|pinduoduo|jd\.com|suning|gome|zhidao\.baidu|wenku\.baidu|baijiahao|mail\.qq|music\.|yinyue|geci|lyrics|kugou|kuwo|qq音乐|iqiyi|youku|bilibili|douyin|kuaishou|qidian|zongheng|17k|ximalaya|qingting|zhihu\.com\/question|sohu\.com\/a|163\.com\/dynamic/.test(u);
 }
 
 // 从整页文本提取所有题号标签（带位置）
@@ -241,19 +259,19 @@ function stripHtmlTags(str) {
   return (str || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// v21: 360 改走移动版 m.so.com —— 桌面版被反爬(验证码页)，移动版 jump?u= 参数直接携带真实 URL
 async function search360(query, num = 8) {
   try {
-    const url = `https://www.so.com/s?q=${encodeURIComponent(query)}`;
-    const resp = await axios.get(url, { headers: HEADERS, timeout: 12000, maxRedirects: 5 });
+    const url = `https://m.so.com/s?q=${encodeURIComponent(query)}`;
+    const resp = await axios.get(url, { headers: { ...HEADERS, 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' }, timeout: 12000, maxRedirects: 5 });
     const $ = cheerio.load(resp.data);
     const results = [];
     $('.res-list').each((i, el) => {
       if (i >= num) return false;
-      const a = $(el).find('h3 a, .res-title a').first();
-      const title = a.text().trim();
+      const a = $(el).find('a.alink').first();
       const link = a.attr('href') || '';
-      let snippet = $(el).find('.res-desc, .res-summary').text().trim();
-      // fallback：取第一个非空段落文本
+      const title = $(el).find('.res-title').text().trim();
+      let snippet = $(el).find('.g-main.summary').text().trim();
       if (!snippet) {
         snippet = $(el).find('p').map((_, p) => $(p).text().trim()).get().filter(Boolean).join(' ');
       }
@@ -275,11 +293,15 @@ async function searchBaidu(query, num = 8) {
     const results = [];
 
     // 旧版结果
+    const seenUrls = new Set();
     $('.result, .c-container').each((i, el) => {
       if (i >= num) return false;
       const a = $(el).find('h3 a, .t a').first();
       const title = a.text().trim();
       const link = a.attr('href') || '';
+      // v21: 百度 link?url= 同一目标会重复出现多次，先去重
+      if (seenUrls.has(link)) return;
+      seenUrls.add(link);
       let snippet = $(el).find('.c-abstract, .content-right_8Zs40, .abstract, span[class*="abstract"]').text().trim();
       if (!snippet) {
         snippet = $(el).find('p').map((_, p) => $(p).text().trim()).get().filter(Boolean).join(' ');
@@ -338,7 +360,18 @@ async function searchBing(query, num = 8) {
       const title = $(el).find('h2').text().trim();
       const link = $(el).find('h2 a').attr('href') || '';
       const snippet = $(el).find('.b_caption p').text().trim() || $(el).find('p').text().trim();
-      if (title && link) results.push({ title, url: link, snippet });
+      // v21: Bing 的 <cite> 展示真实 URL（如 "https://www.moe.gov.cn › index.html"），
+      // 仅当 href 是加密跳转链接 bing.com/ck/a 时才用它替换；直接返回真实链接时保留完整路径
+      let realUrl = link;
+      if (/\/ck\/a/i.test(link)) {
+        const cite = $(el).find('cite').first().text().trim();
+        if (cite) {
+          const seg = cite.split('›')[0].trim();
+          if (/^https?:\/\//i.test(seg)) realUrl = seg;
+          else if (/^[\w.-]+\.[a-z]{2,}/i.test(seg)) realUrl = 'https://' + seg;
+        }
+      }
+      if (title && link) results.push({ title, url: link, realUrl, snippet });
     });
     console.log(`  [Bing搜索] ${query} => ${results.length} 条`);
     return results;
@@ -454,6 +487,56 @@ async function searchBraveAPI(query, num = 8) {
   }
 }
 
+// v21: 解析搜索引擎跳转链接 → 真实 URL（供权威站域名判定/去重/抓取页面）
+// 支持：so.com/jump?u=（u 参数直接是编码后的真实 URL，零请求）
+//       baidu.com/link?url=（302 跟随拿 Location）
+//       bing.com/ck/a（无法从参数解析；searchBing 已通过 <cite> 提取 realUrl）
+async function resolveRealUrl(url) {
+  if (!url || !/^https?:\/\//.test(url)) return url;
+  try {
+    const u = new URL(url);
+    // 1) 360 跳转链接：jump?u= / link?u= 参数直接解码即真实 URL
+    if (u.hostname.includes('so.com') && (u.pathname.startsWith('/jump') || u.pathname.startsWith('/link'))) {
+      const target = u.searchParams.get('u');
+      if (target) {
+        const decoded = decodeURIComponent(target);
+        if (/^https?:\/\//i.test(decoded)) return decoded;
+      }
+    }
+    // 2) 百度跳转链接：link?url= → 302 跟随拿 Location（maxRedirects:0 手动读响应头）
+    if (u.hostname.includes('baidu.com') && u.pathname.startsWith('/link')) {
+      try {
+        const resp = await axios.get(url, {
+          headers: HEADERS,
+          timeout: 8000,
+          maxRedirects: 0,
+          validateStatus: s => (s >= 300 && s < 400) || s < 300,
+        });
+        const loc = resp.headers.location;
+        if (loc && /^https?:\/\//i.test(loc)) return loc;
+        if (resp.status >= 300 && resp.status < 400 && loc && loc.startsWith('/')) {
+          return new URL(loc, 'https://www.baidu.com').toString();
+        }
+      } catch (e) { /* 解析失败保持原样 */ }
+    }
+  } catch (e) {}
+  return url;
+}
+
+// v21: searchWeb 出口统一处理：跳转链接解析为真实 URL + 按真实 URL 去重
+async function finalizeResults(results) {
+  const seen = new Set();
+  const out = [];
+  for (const r of results) {
+    const raw = r.url || '';
+    const real = r.realUrl || (await resolveRealUrl(raw));
+    if (seen.has(real)) continue; // 同一真实地址只保留第一条
+    seen.add(real);
+    out.push({ ...r, url: real, rawUrl: raw });
+  }
+  return out;
+}
+
 async function searchWeb(query, num = 8) {
   // 优先使用搜索 API（云 IP 做 HTML 抓取容易被屏蔽）
   let results = [];
@@ -461,17 +544,19 @@ async function searchWeb(query, num = 8) {
   if (results.length === 0 && BING_SEARCH_KEY) results = await searchBingAPI(query, num);
   if (results.length === 0 && GOOGLE_API_KEY && GOOGLE_CX) results = await searchGoogleAPI(query, num);
   if (results.length === 0 && BRAVE_API_KEY) results = await searchBraveAPI(query, num);
-  // 兜底：直接抓取搜索引擎结果页（仅本地/非云 IP 环境通常有效）
-  if (results.length === 0) {
-    results = await search360(query, num);
-  }
+  // 兜底：直接抓取搜索引擎结果页
+  // v21 顺序调整：百度(稳定+302可解析真实URL) → Bing(稳定+真实URL) → 360(移动版jump?u=可解析但时灵时不灵)
   if (results.length === 0) {
     results = await searchBaidu(query, num);
   }
   if (results.length === 0) {
     results = await searchBing(query, num);
   }
-  return results;
+  if (results.length === 0) {
+    results = await search360(query, num);
+  }
+  // v21: 统一解析跳转链接为真实 URL + 去重
+  return finalizeResults(results);
 }
 
 async function fetchPageText(url) {
@@ -496,8 +581,10 @@ async function fetchPageText(url) {
 async function validateSource(resultItem, queryTokens, minTextLength = 50) {
   const url = resultItem.url || '';
   const title = (resultItem.title || '').replace(/[\s\n]+/g, ' ').trim();
-  // 排除常见搜索占位页、聚合页
-  const badPathPatterns = [/search\?/, /s\?/, /so\?/, /query=/, /\.pdf$/i, /download/i, /\/image\?/];
+  // v21: 垃圾源（电商/娱乐/问答/小说等）不作为有效来源
+  if (isJunkSite(url)) return null;
+  // 排除常见搜索占位页、聚合页（v21: 含百度图片搜索/学习聚合/智能小程序页）
+  const badPathPatterns = [/search\?/, /s\?/, /so\?/, /query=/, /\.pdf$/i, /download/i, /\/image\?/, /search\/?index/, /easylearn\.baidu/, /xue\.baidu\.com\/okam/, /smartapps\.baidu/, /m\.baidu\.com\/s\?/];
   if (!url || badPathPatterns.some(re => re.test(url))) return null;
   if (!/^https?:\/\//.test(url)) return null;
 
@@ -538,7 +625,7 @@ const SURNAMES = '赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许�
   '欧阳司马上官诸葛东方独孤南宫万俟闻人夏侯呼延赫连皇甫尉迟公羊澹台公冶宗政濮阳淳于单于太叔申屠公孙仲孙轩辕令狐钟离宇文长孙慕容司徒司空';
 
 // 标题候选跳过词（startsWith 匹配）
-const TITLE_SKIP = ['考点','部分','语文','数学','英语','物理','化学','历史','地理','政治','生物','时间','分值','分钟','总分','满分','姓名','学校','班级','座位号','准考证','密封线','注意事项','试卷','答案','解析','题目','试题','阅读','请','根据','结合','分析','概括','简述','阐述','谈谈','写出','填空','选择','判断','连线','排序','补全','仿写','改写','翻译','赏析','品味','体会','感受','理解','说明','要求','注意','下列','以下','上面','下面','本文','课文','选自','摘自','出处','来源','作用','效果','原因','方法','特点','意义','价值','表现','结构','表达','方式','角度','关系','影响','过程','结果','背景','目的','意图','好处','妙处','内容','标题','开头','结尾','段落','句子','词语','文化','常识','古诗文','现代文','文言文','说明文','议论文','记叙文','散文','小说','诗歌','戏剧','名著','整本书','文学','写作','作文','微写作','材料','表格','图示','附录','目录','考查','检测','练习','作业','单元','期中','期末','月考','模拟','真题','汇编','冲刺','优秀','良好','合格','卷面','规范','工整','字数','左右','以上','以下','不少于','不多于','正确','错误','恰当','合适','最','更','再','只','仅','都','就','才','又','还','也','并','而','且','或','若','虽','然','因为','所以','但是','如果','那么','因此','于是','然后','接着','同时','此外','另外','总之','综上','可见','显然','尤其','特别','甚至','乃至','以及','关于','对于','通过','经过','凭借','借助','利用','使用','采用','采取','进行','实施','开展','举行','举办','召开','设立','建立','成立','形成','成为','作为','当作','认为','以为','指出','提出','表明','显示','说明','证明','体现','反映','传达','传递','抒发','寄托','蕴含','包含','包括','涉及','相关','有关','无关','影响','功效','功能','用途','用处','好处','坏处','利弊','优劣','得失','成败','是非','对错','真假','虚实','深浅','高低','大小','多少','远近','长短','宽窄','厚薄','轻重','缓急','先后','主次','本末','因果','源流','始末','始终','前后','上下','内外','东西','南北','古今','中外','第一步','第二步','第三步','过考点','易错','高频','逆袭','核心','任务','文本','小贴士','聚焦','感知','体悟','批注','探究','专题','活动','场景','画面','步骤','评价','标准','提示','注释','示例','范例','要点','思路','技巧','策略','规则','格式','写法','手法','特色','风格','语言','情感','主旨','观点','态度','形象','意象','意境','线索','脉络','层次','顺序','详略','品读','细读','精读','研读','速读','略读','跳读','审题','作答','答题','书写','检查','复查','校对','修改','润色','美化','完善','补充','扩展','延伸','拓展','深化','升华','点题','照应','呼应','伏笔','悬念','铺垫','过渡','衔接','对比','衬托','象征','拟人','比喻','排比','对偶','反复','夸张','设问','反问','借代','双关','反语','夸张','通感','顶真','互文','用典','白描','工笔','渲染','烘托','抑扬','卒章显志','开门见山','以小见大','以动衬静','动静结合','情景交融','借景抒情','托物言志','直抒胸臆','寓情于景','移步换景','定点观察','修辞','句式','句式','词语运用','字音','字形','字义','词义','注音','释义','断句','翻译','默写','背诵','诵读','朗读','朗诵','吟诵','吟咏','咏唱','品味','咀嚼','推敲','斟酌','锤炼','打磨','雕琢','构思','立意','选材','布局','谋篇','成文','定稿','修改意见','阅读提示','知识卡片','助读资料','学习任务','活动任务','写作任务','探究任务','综合实践','实践活动','单元提示','课前预习','课后练习','随堂检测','阶段测试','专项训练','综合训练','基础训练','能力提升','素养发展','思维训练','语言运用','文化传承','审美鉴赏','审美创造','时候','我们','人们','你们','他们','它们','自己','什么','怎么','怎样','如何','地方','现在','这里','那里','其实','只是','但是','然而','于是','然后','接着','最后','终于','突然','忽然','总是','经常','常常','往往','一般','通常','大致','大约','几乎','似乎','好像','仿佛','居然','竟然','果然','当然','不过','还是','就是','便是','却是','可是','虽然','即使','即便','无论','不管','只要','只有','除非','如果','假如','要是','若是','倘若','万一','既然','因为','所以','因而','因此','从而','以致','以便','以免','为了','由于','在于','至于','关于','对于','随着','沿着','顺着','凭着','靠着','经过','通过','除了','除去','包括','包含','例如','比如','譬如','诸如','犹如','如同','好比','就像','回来','回去','起来','过去','出来','进来','上去','下去','学生','老师','同学','家长','父母','朋友','个','文言','说说','见闻','逆温','现象','相矛盾','方法借鉴','方法提示','名字','游踪','章结尾','结尾处']; // 末尾补充高频功能词，过滤双栏拼接碎片误报
+const TITLE_SKIP = ['考点','部分','语文','数学','英语','物理','化学','历史','地理','政治','生物','时间','分值','分钟','总分','满分','姓名','学校','班级','座位号','准考证','密封线','注意事项','试卷','答案','解析','题目','试题','阅读','请','根据','结合','分析','概括','简述','阐述','谈谈','写出','填空','选择','判断','连线','排序','补全','仿写','改写','翻译','赏析','品味','体会','感受','理解','说明','要求','注意','主持人','我选理由','想法','下列','以下','上面','下面','本文','课文','选自','摘自','出处','来源','作用','效果','原因','方法','特点','意义','价值','表现','结构','表达','方式','角度','关系','影响','过程','结果','背景','目的','意图','好处','妙处','内容','标题','开头','结尾','段落','句子','词语','文化','常识','古诗文','现代文','文言文','说明文','议论文','记叙文','散文','小说','诗歌','戏剧','名著','整本书','文学','写作','作文','微写作','材料','表格','图示','附录','目录','考查','检测','练习','作业','单元','期中','期末','月考','模拟','真题','汇编','冲刺','优秀','良好','合格','卷面','规范','工整','字数','左右','以上','以下','不少于','不多于','正确','错误','恰当','合适','最','更','再','只','仅','都','就','才','又','还','也','并','而','且','或','若','虽','然','因为','所以','但是','如果','那么','因此','于是','然后','接着','同时','此外','另外','总之','综上','可见','显然','尤其','特别','甚至','乃至','以及','关于','对于','通过','经过','凭借','借助','利用','使用','采用','采取','进行','实施','开展','举行','举办','召开','设立','建立','成立','形成','成为','作为','当作','认为','以为','指出','提出','表明','显示','说明','证明','体现','反映','传达','传递','抒发','寄托','蕴含','包含','包括','涉及','相关','有关','无关','影响','功效','功能','用途','用处','好处','坏处','利弊','优劣','得失','成败','是非','对错','真假','虚实','深浅','高低','大小','多少','远近','长短','宽窄','厚薄','轻重','缓急','先后','主次','本末','因果','源流','始末','始终','前后','上下','内外','东西','南北','古今','中外','第一步','第二步','第三步','过考点','易错','高频','逆袭','核心','任务','文本','小贴士','聚焦','感知','体悟','批注','探究','专题','活动','场景','画面','步骤','评价','标准','提示','注释','示例','范例','要点','思路','技巧','策略','规则','格式','写法','手法','特色','风格','语言','情感','主旨','观点','态度','形象','意象','意境','线索','脉络','层次','顺序','详略','品读','细读','精读','研读','速读','略读','跳读','审题','作答','答题','书写','检查','复查','校对','修改','润色','美化','完善','补充','扩展','延伸','拓展','深化','升华','点题','照应','呼应','伏笔','悬念','铺垫','过渡','衔接','对比','衬托','象征','拟人','比喻','排比','对偶','反复','夸张','设问','反问','借代','双关','反语','夸张','通感','顶真','互文','用典','白描','工笔','渲染','烘托','抑扬','卒章显志','开门见山','以小见大','以动衬静','动静结合','情景交融','借景抒情','托物言志','直抒胸臆','寓情于景','移步换景','定点观察','修辞','句式','句式','词语运用','字音','字形','字义','词义','注音','释义','断句','翻译','默写','背诵','诵读','朗读','朗诵','吟诵','吟咏','咏唱','品味','咀嚼','推敲','斟酌','锤炼','打磨','雕琢','构思','立意','选材','布局','谋篇','成文','定稿','修改意见','阅读提示','知识卡片','助读资料','学习任务','活动任务','写作任务','探究任务','综合实践','实践活动','单元提示','课前预习','课后练习','随堂检测','阶段测试','专项训练','综合训练','基础训练','能力提升','素养发展','思维训练','语言运用','文化传承','审美鉴赏','审美创造','时候','我们','人们','你们','他们','它们','自己','什么','怎么','怎样','如何','地方','现在','这里','那里','其实','只是','但是','然而','于是','然后','接着','最后','终于','突然','忽然','总是','经常','常常','往往','一般','通常','大致','大约','几乎','似乎','好像','仿佛','居然','竟然','果然','当然','不过','还是','就是','便是','却是','可是','虽然','即使','即便','无论','不管','只要','只有','除非','如果','假如','要是','若是','倘若','万一','既然','因为','所以','因而','因此','从而','以致','以便','以免','为了','由于','在于','至于','关于','对于','随着','沿着','顺着','凭着','靠着','经过','通过','除了','除去','包括','包含','例如','比如','譬如','诸如','犹如','如同','好比','就像','回来','回去','起来','过去','出来','进来','上去','下去','学生','老师','同学','家长','父母','朋友','个','文言','说说','见闻','逆温','现象','相矛盾','方法借鉴','方法提示','名字','游踪','章结尾','结尾处']; // 末尾补充高频功能词，过滤双栏拼接碎片误报
 
 // 标题候选按行提取时的额外排除（词尾出现即拒绝）
 const TITLE_SKIP_TAIL = ['效果','作用','原因','方法','特点','意义','价值','表现','结构','表达','方式','角度','关系','影响','过程','结果','背景','目的','意图','好处','妙处','内容','标题','开头','结尾','段落','句子','词语','文化','常识','风格','语言','情感','主旨','观点','态度','形象','意象','意境','线索','脉络','层次','顺序','详略','修辞','写法','手法','特色','思路','技巧','策略','规则','格式','标准','要点','提示','注释','示例','范例','任务','文本','材料','小贴士','批注','评价','步骤','场景','画面','专题','活动','探究','经历','见闻','关键','原则','准绳'];
@@ -558,7 +645,7 @@ const MEETING_RE = /(中国共产党第[一二三四五六七八九十]{1,3}次�
 const ORG_RE = /(中华人民共和国国务院|中华人民共和国教育部|国务院|教育部|外交部|国防部|公安部|民政部|财政部|自然资源部|生态环境部|住房和城乡建设部|交通运输部|水利部|农业农村部|商务部|文化和旅游部|国家卫生健康委员会|应急管理部|中国人民银行|审计署|国家统计局|中国气象局|国家市场监督管理总局|国家广播电视总局|国家体育总局|国家林业和草原局|国家药品监督管理局|国家知识产权局|国家新闻出版署|中国科学院|中国工程院|中国社会科学院|中国作家协会|中国科学技术协会|中华全国总工会|共青团中央|全国妇联|新华社|人民日报社|光明日报社|中央广播电视总台|清华大学|北京大学|中国人民大学|北京师范大学|复旦大学|浙江大学|南京大学|武汉大学|中山大学|四川大学|山东大学|上海交通大学|同济大学|华东师范大学|东北师范大学|华中师范大学|西南大学|陕西师范大学|湖南大学|兰州大学|吉林大学|厦门大学)/g;
 
 // 行政区划地名（省/自治区/直辖市/特别行政区/市，排除常见非地名词）
-const PLACE_RE = /([\u4e00-\u9fa5]{2,6}省|[\u4e00-\u9fa5]{1,5}自治区|[\u4e00-\u9fa5]{1,5}直辖市|[\u4e00-\u9fa5]{2,6}特别行政区|[\u4e00-\u9fa5]{1,5}市)(?!场)/g;
+const PLACE_RE = /([\u4e00-\u9fa5]{2,6}省|[\u4e00-\u9fa5]{1,5}自治区|[\u4e00-\u9fa5]{1,5}直辖市|[\u4e00-\u9fa5]{2,6}特别行政区|[\u4e00-\u9fa5]{1,5}市)(?!场|民)/g;
 const NON_PLACE_NAMES = ['城市','都市','市场','市区','市郊','市内','市面','市井','市集','市价','市容','市貌','楼市','股市','两市','全市','本市','该市','各市','城市','城','全县','镇乡','市区','城区','夜市','集市','早市','市上','市里'];
 
 // 人名判断：以常见姓开头且长度 2-4（笔名/知名作家白名单优先通过）
@@ -578,6 +665,10 @@ function isBadName(name) {
   if (!name) return true;
   if (name.length > 4) return true;
   if (/语句|温层|游踪|任务|结尾|开头|修辞|赏析|和谐|之美|经历|见闻|上亿|个名字|说说|方法|借鉴|释义|提示|现象|相矛盾|名字|效果|作用|原因|特点|意义|价值|层次|结构|表现|风格|语言|情感|主旨|观点|态度|形象|意象|意境|线索|脉络|顺序|详略|写法|手法|特色|思路|技巧|策略|规则|格式|标准|要点|注释|示例|范例|步骤|场景|画面|专题|活动|探究|评价|秦时官|代在/.test(name)) return true;
+  // v21: 考点词/操作词/口语交际标签不可能是作者（「通假字《鸢飞戾天者》」「上联《…》」「长大后《以和为贵》」）
+  if (/^(通假字|上联|下联|文章|方案|时间|长大|和美|任选|选一个|我选理由|院长|主持人|据上下文|推断|分辨|气候|人生感怀|人数比例|南安军)/.test(name)) return true;
+  // v21: 作者名不可能含行政区划后缀（「宁波市《中考五年真题汇编·陕西》」双栏碎片）
+  if (/[省市县区]$/.test(name)) return true;
   // v20: 抽象特征词不可能是人名（「精湛技艺」「文化内涵」等误配）
   if (/技艺|智慧|境界|情怀|内涵|魅力|风采|精髓|文化|传统|精神|文明|素质|修养|素养|品格|品德|德行|情操|志趣|理想|信念|价值|追求|崇尚|弘扬|传承|发扬|彰显|体现|展现|凸显|折射|蕴含|承载|凝结|汇聚|凝聚|激发|人文|素养|底蕴/.test(name)) return true;
   // v20: 以单字虚词/连接词结尾（「元在」「予以」等句子碎片，修「柳宗|元在」误配）
@@ -609,11 +700,14 @@ function extractTitleFromLine(lineText) {
   const whole = s.replace(/\s/g, '');
   // 1) 整行去空格后为纯汉字（可含·），2-12字（词牌「水调歌头·明月几时有」后缀允许最长8字）
   if (/^[\u4e00-\u9fa5·]{2,12}$/.test(whole)) {
-    if (whole.includes('·')) {
-      const parts = whole.split('·');
+    // v21: 剥离「丙观潮」等分组标签前缀（【丙】观潮排版断裂时标签与标题粘连）
+    let w = whole;
+    if (/^[甲乙丙丁戊己庚辛壬癸]/.test(w) && w.length > 2) w = w.slice(1);
+    if (w.includes('·')) {
+      const parts = w.split('·');
       if (parts.length !== 2 || parts.some(p => p.length < 2 || p.length > 8)) return null;
     }
-    return { title: whole, src: 'whole' };
+    return { title: w, src: 'whole' };
   }
   // 2) 行首段：汉字+可选(后缀括号)，后跟空格或开括号或行尾（双栏拼接处通常有空格）
   const m = s.match(/^([\u4e00-\u9fa5·]{2,12})(?:[（(][^）)]{0,6}[）)])?(?=\s|[（(]|$)/);
@@ -1150,9 +1244,14 @@ function identifyItems(pages) {
     // 8. 科技术语/专业术语：带"称为/叫做/是指/术语"等标注的
     const termRe = /(?:称为|叫做|是指|术语|简称|缩写|定义)[：:]?\s*([^\n。；，！？""""''《》【】]{2,15})/g;
     while ((m = termRe.exec(text)) !== null) {
-      const term = m[1].trim();
+      let term = m[1].trim().replace(/\s+/g, '');
       // 排除太短或纯数字
       if (term.length < 2) continue;
+      // v21: 术语必须含足量汉字（防「.(４ " " « » " "」等符号碎片）
+      const cnCount = (term.match(/[\u4e00-\u9fa5]/g) || []).length;
+      if (cnCount < 2 || cnCount < term.length * 0.6) continue;
+      // v21: 含题目操作词的不是术语（「分辨气候据上下文推断别」碎片）
+      if (/据上下文推断|上下文推断|选一个|任选|这一问题的看法|信息的人名/.test(term)) continue;
       // 排除以虚词/程度副词开头的碎片（如「定义也很独特」→「也很独特」）
       if (/^(也|很|更|最|都|就|才|又|还|并|而|且|或|若|虽|然|因为|所以|但是|如果|那么|因而|因此|于是|然后|接着|同时|此外|另外|只要|只有|除非|即使|无论|不管)/.test(term)) continue;
       // 排除已被其他类型覆盖的
@@ -1329,9 +1428,13 @@ function identifyItems(pages) {
       // v20: 排除出处标注前缀（「摘编自广东省肿瘤康复学会科普平台…」→ 归出处标注识别）
       const beforePlace = text.substring(Math.max(0, m.index - 8), m.index);
       if (/(选自|原载|出处|摘自|引自|来源|载于|节选自|摘编自|有删改)/.test(beforePlace)) continue;
+      // v21: 排除「(夜)打曾头市」等小说回目/动作+虚构地名（如《水浒传》「宋公明夜打曾头市」）
+      if (/市$/.test(name) && /(?:夜?打|攻打|攻占|夺取|占领|解放|收复|撤离|进驻)[\u4e00-\u9fa5]{1,4}市$/.test(beforePlace + name)) continue;
       // 排除常见非地名（城市/市场/全市 等）与碎片（含"的"如「水泥的城市」）
       if (NON_PLACE_NAMES.includes(name)) continue;
       if (name.includes('的')) continue;
+      // v21: 「2023年杭州市」→ 前缀「年」与地名粘连成「年杭州市」碎片
+      if (/^年/.test(name)) continue;
       if (/外省|向外|该省|全省|各省|本省|邻省|外市|该市|全市|本市|各市|城市|市场|市区|市郊|市内|市面|市井|市集|市价|市容|市貌|楼市|股市|两市|夜市|集市|早市|市上|市里|县区|全镇|城区/.test(name)) continue;
       // 排除被引用/书名号覆盖的
       const covered = items.some(it => it.context && it.context.includes(name));
@@ -1434,16 +1537,17 @@ async function verifyItem(item) {
       const results = await searchWeb(query, 8);
       await sleep(800);
 
-      // 用snippet比对
-      const allSnippets = results.map(r => r.snippet).join(' ');
+      // v21: 判定只看权威站结果（百科/古籍/教材/媒体等），垃圾源不参与
+      const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+      const allSnippets = authResults.map(r => r.snippet).join(' ');
 
       if (item.quoteText) {
         // 有引文，精确比对
         let found = findInText(item.quoteText, allSnippets);
 
-        // 如果snippet没找到，取前2个已验证来源的页面内容再比对
-        if (!found.found && results.length > 0) {
-          const pageSources = await getValidSources(results, item, 2);
+        // 如果snippet没找到，取前2个权威站来源的页面内容再比对
+        if (!found.found && authResults.length > 0) {
+          const pageSources = await getValidSources(authResults, item, 2);
           for (const src of pageSources) {
             const pageText = await fetchPageText(src.url);
             await sleep(400);
@@ -1461,38 +1565,33 @@ async function verifyItem(item) {
           result.notes = `原文为"${found.sourceText}"，试卷作"${item.quoteText}"。差异：${diffStr}`;
           result.suggestion = `建议改为原文"${found.sourceText}"`;
         } else {
-          // 没找到精确匹配，但找到了相关结果
-          if (results.length > 0) {
+          // v21: 只有权威站结果存在且未匹配才「存疑」，否则「无法核实」
+          if (authResults.length > 0) {
             result.verdict = '存疑待商';
-            result.notes = '搜索到相关结果但未在摘要中找到完全匹配的原文，建议人工核查';
+            result.notes = '权威来源搜索到相关结果但未找到完全匹配的原文，建议人工核查';
           } else {
             result.verdict = '无法核实';
-            result.notes = '未搜索到相关结果';
+            result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
           }
         }
       } else {
-        // 无引文，仅核实作者+标题是否存在
-        if (results.length > 0) {
-          // 检查搜索结果标题/摘要中是否包含作者名和标题
-          const allText = results.map(r => r.title + ' ' + r.snippet).join(' ');
-          const normAll = normalizeText(allText);
-          const normTitle = normalizeText(item.title);
-          const normAuthor = item.author ? normalizeText(item.author) : '';
-          const titleInResults = normTitle && normTitle.length >= 2 && normAll.includes(normTitle);
-          const authorInResults = !normAuthor || normAll.includes(normAuthor);
+        // 无引文，仅核实作者+标题是否存在（v21: 仅依据权威站结果）
+        const normAll = normalizeText(authResults.map(r => r.title + ' ' + r.snippet).join(' '));
+        const normTitle = normalizeText(item.title);
+        const normAuthor = item.author ? normalizeText(item.author) : '';
+        const titleInResults = normTitle && normTitle.length >= 2 && normAll.includes(normTitle);
+        const authorInResults = !normAuthor || normAll.includes(normAuthor);
 
-          if (titleInResults) {
-            // 标题在搜索结果中找到，即认为存在
-            result.verdict = '内容无误';
-            result.notes = `${item.author ? item.author + '·' : ''}《${item.title}》存在，标题与搜索结果一致`;
-          } else if (results.length >= 3) {
-            // 标题未在摘要中直接找到，但搜索到多条结果
-            result.verdict = '存疑待商';
-            result.notes = '搜索到相关结果，但未在摘要中明确确认标题，建议人工核查';
-          } else {
-            result.verdict = '存疑待商';
-            result.notes = '搜索结果较少，建议人工核查';
-          }
+        if (titleInResults) {
+          // 标题在权威站搜索结果中找到，即认为存在
+          result.verdict = '内容无误';
+          result.notes = `${item.author ? item.author + '·' : ''}《${item.title}》存在，标题与权威来源搜索结果一致`;
+        } else if (authResults.length > 0) {
+          result.verdict = '存疑待商';
+          result.notes = '权威来源搜索到相关结果，但未在摘要中明确确认标题，建议人工核查';
+        } else {
+          result.verdict = '无法核实';
+          result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
         }
       }
       result.sources = await getValidSources(results, item);
@@ -1504,23 +1603,30 @@ async function verifyItem(item) {
       const results = await searchWeb(query, 5);
       await sleep(800);
 
-      if (results.length > 0) {
-        // 检查出处中的关键信息是否匹配
-        const allText = results.map(r => r.title + ' ' + r.snippet).join(' ');
-        const normalizedCite = normalizeText(item.citationText);
-        const normalizedAll = normalizeText(allText);
+      // v21: 仅权威站结果参与判定；书名号内书名优先作为关键匹配词
+      const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+      const normalizedAll = normalizeText(authResults.map(r => r.title + ' ' + r.snippet).join(' '));
+      const citeRaw = item.citationText || '';
+      const bookMatch = citeRaw.match(/《([^》]+)》/);
+      const keyTokens = [];
+      if (bookMatch && bookMatch[1]) keyTokens.push(normalizeText(bookMatch[1]));
+      keyTokens.push(normalizeText(citeRaw).substring(0, 10));
+      const yearMatch = citeRaw.match(/(\d{4})/);
 
-        // 检查是否包含出处中的年份/期刊名
-        const yearMatch = item.citationText.match(/(\d{4})/);
-        const hasYear = yearMatch && normalizedAll.includes(yearMatch[1]);
+      const hit = keyTokens.some(k => k && k.length >= 2 && normalizedAll.includes(k)) ||
+                  (yearMatch && normalizedAll.includes(yearMatch[1]));
 
-        if (hasYear || normalizedAll.includes(normalizedCite.substring(0, 10))) {
+      if (authResults.length > 0) {
+        if (hit) {
           result.verdict = '内容无误';
-          result.notes = '出处信息与搜索结果一致';
+          result.notes = '出处信息与权威来源搜索结果一致';
         } else {
           result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，但出处细节未能完全确认，建议人工核查';
+          result.notes = '权威来源搜索到相关结果，但出处细节未能完全确认，建议人工核查';
         }
+      } else {
+        result.verdict = '无法核实';
+        result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
       }
       result.sources = await getValidSources(results, item);
 
@@ -1531,22 +1637,24 @@ async function verifyItem(item) {
       const results = await searchWeb(item.quoteText.substring(0, 25), 6);
       await sleep(800);
 
-      const allSnippets = results.map(r => r.snippet).join(' ');
+      // v21: 仅权威站结果参与判定
+      const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+      const allSnippets = authResults.map(r => r.snippet).join(' ');
       const found = findInText(item.quoteText, allSnippets);
 
       if (found.found && found.exact) {
         result.verdict = '内容无误';
-        result.notes = '引用文本与搜索结果一致';
+        result.notes = '引用文本与权威来源搜索结果一致';
       } else if (found.found && !found.exact && found.diffs) {
         result.verdict = '存在错误';
         const diffStr = found.diffs.map(d => `"${d.pdf}"→"${d.source}"`).join('，');
         result.notes = `原文为"${found.sourceText}"，试卷作"${item.quoteText}"。差异：${diffStr}`;
         result.suggestion = `建议改为"${found.sourceText}"`;
-      } else if (results.length > 0) {
-        // 尝试取页面内容
+      } else if (authResults.length > 0) {
+        // 尝试取权威站页面内容
         let pageFound = false;
-        for (let i = 0; i < Math.min(2, results.length); i++) {
-          const pageText = await fetchPageText(results[i].url);
+        for (let i = 0; i < Math.min(2, authResults.length); i++) {
+          const pageText = await fetchPageText(authResults[i].url);
           await sleep(400);
           const f = findInText(item.quoteText, pageText);
           if (f.found) {
@@ -1565,8 +1673,11 @@ async function verifyItem(item) {
         }
         if (!pageFound) {
           result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，但未找到完全匹配文本，建议人工核查';
+          result.notes = '权威来源搜索到相关结果，但未找到完全匹配文本，建议人工核查';
         }
+      } else {
+        result.verdict = '无法核实';
+        result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
       }
       result.sources = await getValidSources(results, item);
 
@@ -1578,60 +1689,97 @@ async function verifyItem(item) {
       const results = await searchWeb(query, 5);
       await sleep(800);
 
-      if (results.length > 0) {
-        const allText = results.map(r => r.snippet).join(' ');
-        const found = findInText(item.number, allText);
-        if (found.found) {
-          result.verdict = '内容无误';
-          result.notes = `数据"${item.content}"与搜索结果一致`;
-        } else {
-          result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，但未确认到具体数据，建议人工核查';
-        }
+      // v21: 仅权威媒体/政府站结果参与判定
+      const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+      const allText = authResults.map(r => r.snippet).join(' ');
+      const found = findInText(item.number, allText);
+      if (found.found) {
+        result.verdict = '内容无误';
+        result.notes = `数据"${item.content}"与权威来源搜索结果一致`;
+      } else if (authResults.length > 0) {
+        result.verdict = '存疑待商';
+        result.notes = '权威来源搜索到相关结果，但未确认到具体数据，建议人工核查';
+      } else {
+        result.verdict = '无法核实';
+        result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
       }
       result.sources = await getValidSources(results, item);
 
     } else if (item.type === '字词注释') {
-      // 搜索《说文解字》释义
+      // v21: 优先定向查汉典（字词权威源，无需经过搜索引擎）
       const char = item.definition.match(/[\u4e00-\u9fa5]/);
       if (char) {
-        const query = `${char[0]} 说文解字`;
-        console.log(`  [搜索] ${query}`);
-        const results = await searchWeb(query, 5);
-        await sleep(800);
+        const defNorm = normalizeText(item.definition).substring(0, 12);
+        let verifiedByZdic = false;
+        try {
+          const zdicUrl = `https://www.zdic.net/hans/${encodeURIComponent(char[0])}`;
+          const pageText = await fetchPageText(zdicUrl);
+          if (pageText && pageText.length > 100 && defNorm.length >= 2 && normalizeText(pageText).includes(defNorm)) {
+            verifiedByZdic = true;
+            result.verdict = '内容无误';
+            result.notes = `释义与汉典"${char[0]}"词条一致`;
+            result.sources = [{ title: `汉典 - ${char[0]}`, url: zdicUrl, snippet: defNorm, verified: true }];
+          }
+        } catch (e) {}
 
-        const allText = results.map(r => r.snippet).join(' ');
-        const found = findInText(item.definition.substring(0, 10), allText);
+        if (!verifiedByZdic) {
+          // 回退：搜索引擎 + 权威站过滤
+          const query = `${char[0]} 说文解字`;
+          console.log(`  [搜索] ${query}`);
+          const results = await searchWeb(query, 5);
+          await sleep(800);
 
-        if (found.found) {
-          result.verdict = '内容无误';
-          result.notes = '释义与《说文解字》一致';
-        } else if (results.length > 0) {
-          result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，建议人工核查释义';
+          const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+          const allText = authResults.map(r => r.title + ' ' + r.snippet).join(' ');
+          const found = findInText(item.definition.substring(0, 10), allText);
+
+          if (found.found) {
+            result.verdict = '内容无误';
+            result.notes = '释义与《说文解字》一致';
+          } else if (authResults.length > 0) {
+            result.verdict = '存疑待商';
+            result.notes = '权威来源搜索到相关结果，建议人工核查释义';
+          } else {
+            result.verdict = '无法核实';
+            result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
+          }
+          result.sources = await getValidSources(results, item);
         }
-        result.sources = await getValidSources(results, item);
       }
 
     } else if (item.type === '历史日期') {
-      // 搜索日期相关事件
-      const ctxWords = item.context.replace(item.content, '').trim().substring(0, 15);
-      const query = `${ctxWords} ${item.year}年${item.month}月${item.day}日`;
-      console.log(`  [搜索] ${query}`);
-      const results = await searchWeb(query, 5);
-      await sleep(800);
+      // v21: 日期真实性本地校验（不依赖搜索引擎，杜绝「日期→淘宝/歌曲」等无关结果）
+      const y = parseInt(item.year, 10);
+      const m = parseInt(item.month, 10);
+      const d = parseInt(item.day, 10);
+      const dt = new Date(y, m - 1, d);
+      const validDate = !isNaN(dt.getTime()) && dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
+      const reasonable = y >= 1900 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31;
 
-      if (results.length > 0) {
-        const allText = results.map(r => r.snippet).join(' ');
-        if (allText.includes(item.year) && (allText.includes(item.month + '月') || allText.includes(item.month))) {
-          result.verdict = '内容无误';
-          result.notes = `日期"${item.content}"与搜索结果一致`;
-        } else {
-          result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，但日期未完全确认，建议人工核查';
+      if (validDate && reasonable) {
+        result.verdict = '内容无误';
+        result.notes = `日期"${item.content}"格式合法且为真实存在的日期`;
+        // 若上下文含具体事件（如会议/讲话/活动），补一次权威搜索交叉验证
+        const ctxRaw = (item.context || '').replace(item.content, '').replace(/[^\u4e00-\u9fa5]/g, '').substring(0, 12);
+        if (ctxRaw && ctxRaw.length >= 4 && /(举行|召开|举办|讲话|发表|发布|提出|签署|纪念|成立|开幕|闭幕|通过|审议)/.test(ctxRaw)) {
+          const query = `${ctxRaw} ${item.year}年${item.month}月${item.day}日`;
+          console.log(`  [搜索] ${query}`);
+          const results = await searchWeb(query, 5);
+          await sleep(800);
+          const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+          const authText = normalizeText(authResults.map(r => r.title + ' ' + r.snippet).join(' '));
+          if (authText.includes(String(item.year)) && (authText.includes(item.month + '月') || authText.includes(item.month))) {
+            result.notes = `日期"${item.content}"真实存在，且与权威来源关于"${ctxRaw}"的报道一致`;
+            result.sources = await getValidSources(results, item);
+          } else if (authResults.length > 0) {
+            result.notes = `日期"${item.content}"真实存在；事件"${ctxRaw}"未在权威来源完全确认，建议抽查`;
+          }
         }
+      } else {
+        result.verdict = '存在错误';
+        result.notes = `日期"${item.content}"不存在或超出合理范围（年月日组合无效）`;
+        result.suggestion = `请核对"${item.content}"的年份/月份/日期`;
       }
-      result.sources = await getValidSources(results, item);
 
     } else if (item.type === '领导人讲话') {
       // 优先搜索国家领导人讲话数据库
@@ -1640,21 +1788,23 @@ async function verifyItem(item) {
       const results = await searchWeb(query, 8);
       await sleep(800);
 
-      const allSnippets = results.map(r => r.snippet).join(' ');
+      // v21: 仅权威媒体/讲话库结果参与判定
+      const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+      const allSnippets = authResults.map(r => r.snippet).join(' ');
       const found = findInText(item.quoteText, allSnippets);
 
       if (found.found && found.exact) {
         result.verdict = '内容无误';
-        result.notes = '领导人讲话引用与搜索结果一致';
+        result.notes = '领导人讲话引用与权威来源搜索结果一致';
       } else if (found.found && !found.exact && found.diffs) {
         result.verdict = '存在错误';
         const diffStr = found.diffs.map(d => `"${d.pdf}"→"${d.source}"`).join('，');
         result.notes = `原文为"${found.sourceText}"，稿件作"${item.quoteText}"。差异：${diffStr}`;
         result.suggestion = `建议改为原文"${found.sourceText}"`;
-      } else if (results.length > 0) {
-        // 尝试取页面内容精确比对
+      } else if (authResults.length > 0) {
+        // 尝试取权威站页面内容精确比对
         let pageFound = false;
-        const pageSources = await getValidSources(results, item, 2);
+        const pageSources = await getValidSources(authResults, item, 2);
         for (const src of pageSources) {
           const pageText = await fetchPageText(src.url);
           await sleep(400);
@@ -1675,8 +1825,11 @@ async function verifyItem(item) {
         }
         if (!pageFound) {
           result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，但未找到完全匹配的讲话原文，建议人工核查';
+          result.notes = '权威来源搜索到相关结果，但未找到完全匹配的讲话原文，建议人工核查';
         }
+      } else {
+        result.verdict = '无法核实';
+        result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
       }
       result.sources = await getValidSources(results, item);
 
@@ -1687,17 +1840,21 @@ async function verifyItem(item) {
       const results = await searchWeb(query, 5);
       await sleep(800);
 
-      if (results.length > 0) {
-        const allText = results.map(r => r.title + ' ' + r.snippet).join(' ');
-        const normAll = normalizeText(allText);
-        const normTerm = normalizeText(item.termText);
-        if (normAll.includes(normTerm)) {
+      // v21: 仅术语在线/百科等权威源参与判定
+      const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+      const normAll = normalizeText(authResults.map(r => r.title + ' ' + r.snippet).join(' '));
+      const normTerm = normalizeText(item.termText);
+      if (authResults.length > 0) {
+        if (normTerm && normAll.includes(normTerm)) {
           result.verdict = '内容无误';
-          result.notes = `术语"${item.termText}"在搜索结果中找到`;
+          result.notes = `术语"${item.termText}"在权威来源搜索结果中找到`;
         } else {
           result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，但未完全确认术语，建议人工核查';
+          result.notes = '权威来源搜索到相关结果，但未完全确认术语，建议人工核查';
         }
+      } else {
+        result.verdict = '无法核实';
+        result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
       }
       result.sources = await getValidSources(results, item);
 
@@ -1710,23 +1867,23 @@ async function verifyItem(item) {
       const results = await searchWeb(query, 6);
       await sleep(800);
 
-      if (results.length > 0) {
-        const allText = results.map(r => r.title + ' ' + r.snippet).join(' ');
-        const normAll = normalizeText(allText);
-        const normTitle = normalizeText(item.title);
-        const normAuthor = item.author ? normalizeText(item.author) : '';
-        const titleInResults = normTitle && normTitle.length >= 2 && normAll.includes(normTitle);
-        const authorInResults = !normAuthor || normAll.includes(normAuthor);
-        if (titleInResults && authorInResults) {
-          result.verdict = '内容无误';
-          result.notes = `${item.author}《${item.title}》与搜索结果一致`;
-        } else if (titleInResults || results.length >= 3) {
-          result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，但作者/标题未能完全确认，建议人工核查';
-        }
+      // v21: 仅权威站结果参与判定（百科/媒体/教材等）
+      const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+      const normAll = normalizeText(authResults.map(r => r.title + ' ' + r.snippet).join(' '));
+      const normTitle = normalizeText(item.title);
+      const normAuthor = item.author ? normalizeText(item.author) : '';
+      const titleInResults = normTitle && normTitle.length >= 2 && normAll.includes(normTitle);
+      const authorInResults = !normAuthor || normAll.includes(normAuthor);
+
+      if (titleInResults && authorInResults) {
+        result.verdict = '内容无误';
+        result.notes = `${item.author}《${item.title}》与权威来源搜索结果一致`;
+      } else if (authResults.length > 0) {
+        result.verdict = '存疑待商';
+        result.notes = '权威来源搜索到相关结果，但作者/标题未能完全确认，建议人工核查';
       } else {
         result.verdict = '无法核实';
-        result.notes = '未搜索到相关结果';
+        result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
       }
       result.sources = await getValidSources(results, item);
 
@@ -1738,20 +1895,21 @@ async function verifyItem(item) {
       const results = await searchWeb(query, 5);
       await sleep(800);
 
-      if (results.length > 0) {
-        const allText = results.map(r => r.title + ' ' + r.snippet).join(' ');
-        const normAll = normalizeText(allText);
-        const normName = normalizeText(name);
-        if (normAll.includes(normName)) {
+      // v21: 仅权威站结果参与判定
+      const authResults = results.filter(r => isAuthoritativeUrl(r.url, item.type) && !isJunkSite(r.url));
+      const normAll = normalizeText(authResults.map(r => r.title + ' ' + r.snippet).join(' '));
+      const normName = normalizeText(name);
+      if (authResults.length > 0) {
+        if (normName && normAll.includes(normName)) {
           result.verdict = '内容无误';
-          result.notes = `"${name}"与搜索结果一致`;
+          result.notes = `"${name}"与权威来源搜索结果一致`;
         } else {
           result.verdict = '存疑待商';
-          result.notes = '搜索到相关结果，但名称未完全确认，建议人工核查';
+          result.notes = '权威来源搜索到相关结果，但名称未完全确认，建议人工核查';
         }
       } else {
         result.verdict = '无法核实';
-        result.notes = '未搜索到相关结果';
+        result.notes = results.length > 0 ? '搜索结果无权威来源，无法核实' : '未搜索到相关结果';
       }
       result.sources = await getValidSources(results, item);
     }
@@ -1784,21 +1942,28 @@ app.get('/api/debug/search', async (req, res) => {
   };
   try {
     const r360 = await search360(query, 2);
-    results['360'] = { status: 'ok', count: r360.length, sample: r360.slice(0, 1).map(x => ({ title: x.title, snippet: x.snippet?.slice(0, 80) })) };
+    results['360'] = { status: 'ok', count: r360.length, sample: r360.slice(0, 1).map(x => ({ title: x.title, url: x.url, snippet: x.snippet?.slice(0, 80) })) };
   } catch (e) {
     results['360'] = { status: 'error', error: e.message };
   }
   try {
     const rbaidu = await searchBaidu(query, 2);
-    results.baidu = { status: 'ok', count: rbaidu.length, sample: rbaidu.slice(0, 1).map(x => ({ title: x.title, snippet: x.snippet?.slice(0, 80) })) };
+    results.baidu = { status: 'ok', count: rbaidu.length, sample: rbaidu.slice(0, 1).map(x => ({ title: x.title, url: x.url, snippet: x.snippet?.slice(0, 80) })) };
   } catch (e) {
     results.baidu = { status: 'error', error: e.message };
   }
   try {
     const rbing = await searchBing(query, 2);
-    results.bing = { status: 'ok', count: rbing.length, sample: rbing.slice(0, 1).map(x => ({ title: x.title, snippet: x.snippet?.slice(0, 80) })) };
+    results.bing = { status: 'ok', count: rbing.length, sample: rbing.slice(0, 1).map(x => ({ title: x.title, url: x.url, realUrl: x.realUrl, snippet: x.snippet?.slice(0, 80) })) };
   } catch (e) {
     results.bing = { status: 'error', error: e.message };
+  }
+  // v21: 展示 searchWeb 统一解析后的真实 URL
+  try {
+    const rweb = await searchWeb(query, 3);
+    results.resolved = rweb.map(x => ({ title: x.title, rawUrl: x.rawUrl, url: x.url }));
+  } catch (e) {
+    results.resolved = { status: 'error', error: e.message };
   }
   res.json({ query, results, env: { node: process.version } });
 });
@@ -1878,7 +2043,7 @@ app.post('/api/check', async (req, res) => {
 });
 
 // ===== 导出（供本地测试/模块化使用）=====
-module.exports = { identifyItems, extractTitleFromLine, extractAuthorFromLine, isLikelyName, buildNormMap, findTitleAuthorBlocks, collectStreamBody };
+module.exports = { identifyItems, extractTitleFromLine, extractAuthorFromLine, isLikelyName, buildNormMap, findTitleAuthorBlocks, collectStreamBody, isAuthoritativeUrl, isJunkSite };
 
 // ===== 启动 =====
 if (require.main === module) {
